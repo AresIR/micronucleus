@@ -1,0 +1,2110 @@
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 1
+
+
+   1               		.file	"light_ws2812.c"
+   2               	__SP_H__ = 0x3e
+   3               	__SP_L__ = 0x3d
+   4               	__SREG__ = 0x3f
+   5               	__tmp_reg__ = 0
+   6               	__zero_reg__ = 1
+   7               		.text
+   8               	.Ltext0:
+   9               		.cfi_sections	.debug_frame
+  10               		.section	.text.ws2812_sendarray_mask,"ax",@progbits
+  11               	.global	ws2812_sendarray_mask
+  12               		.type	ws2812_sendarray_mask, @function
+  13               	ws2812_sendarray_mask:
+  14               	.LFB10:
+  15               		.file 1 "light_ws2812.c"
+   1:light_ws2812.c **** /*
+   2:light_ws2812.c **** * light weight WS2812 lib V2.0b
+   3:light_ws2812.c **** *
+   4:light_ws2812.c **** * Controls WS2811/WS2812/WS2812B RGB-LEDs
+   5:light_ws2812.c **** * Author: Tim (cpldcpu@gmail.com)
+   6:light_ws2812.c **** *
+   7:light_ws2812.c **** * Jan 18th, 2014  v2.0b Initial Version
+   8:light_ws2812.c **** * Nov 29th, 2015  v2.3  Added SK6812RGBW support
+   9:light_ws2812.c **** *
+  10:light_ws2812.c **** * License: GNU GPL v2 (see License.txt)
+  11:light_ws2812.c **** */
+  12:light_ws2812.c **** 
+  13:light_ws2812.c **** #include "light_ws2812.h"
+  14:light_ws2812.c **** #include <avr/interrupt.h>
+  15:light_ws2812.c **** #include <avr/io.h>
+  16:light_ws2812.c **** #include <util/delay.h>
+  17:light_ws2812.c ****  
+  18:light_ws2812.c **** // Setleds for standard RGB 
+  19:light_ws2812.c **** void inline ws2812_setleds(struct cRGB *ledarray, uint16_t leds)
+  20:light_ws2812.c **** {
+  21:light_ws2812.c ****    ws2812_setleds_pin(ledarray,leds, _BV(ws2812_pin));
+  22:light_ws2812.c **** }
+  23:light_ws2812.c **** 
+  24:light_ws2812.c **** void inline ws2812_setleds_pin(struct cRGB *ledarray, uint16_t leds, uint8_t pinmask)
+  25:light_ws2812.c **** {
+  26:light_ws2812.c ****   ws2812_sendarray_mask((uint8_t*)ledarray,leds+leds+leds,pinmask);
+  27:light_ws2812.c ****   _delay_us(50);
+  28:light_ws2812.c **** }
+  29:light_ws2812.c **** 
+  30:light_ws2812.c **** // Setleds for SK6812RGBW
+  31:light_ws2812.c **** void inline ws2812_setleds_rgbw(struct cRGBW *ledarray, uint16_t leds)
+  32:light_ws2812.c **** {
+  33:light_ws2812.c ****   ws2812_sendarray_mask((uint8_t*)ledarray,leds<<2,_BV(ws2812_pin));
+  34:light_ws2812.c ****   _delay_us(80);
+  35:light_ws2812.c **** }
+  36:light_ws2812.c **** 
+  37:light_ws2812.c **** void ws2812_sendarray(uint8_t *data,uint16_t datlen)
+  38:light_ws2812.c **** {
+  39:light_ws2812.c ****   ws2812_sendarray_mask(data,datlen,_BV(ws2812_pin));
+  40:light_ws2812.c **** }
+  41:light_ws2812.c **** 
+  42:light_ws2812.c **** /*
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 2
+
+
+  43:light_ws2812.c ****   This routine writes an array of bytes with RGB values to the Dataout pin
+  44:light_ws2812.c ****   using the fast 800kHz clockless WS2811/2812 protocol.
+  45:light_ws2812.c **** */
+  46:light_ws2812.c **** 
+  47:light_ws2812.c **** // Timing in ns
+  48:light_ws2812.c **** #define w_zeropulse   350
+  49:light_ws2812.c **** #define w_onepulse    900
+  50:light_ws2812.c **** #define w_totalperiod 1250
+  51:light_ws2812.c **** 
+  52:light_ws2812.c **** // Fixed cycles used by the inner loop
+  53:light_ws2812.c **** #define w_fixedlow    2
+  54:light_ws2812.c **** #define w_fixedhigh   4
+  55:light_ws2812.c **** #define w_fixedtotal  8   
+  56:light_ws2812.c **** 
+  57:light_ws2812.c **** // Insert NOPs to match the timing, if possible
+  58:light_ws2812.c **** #define w_zerocycles    (((F_CPU/1000)*w_zeropulse          )/1000000)
+  59:light_ws2812.c **** #define w_onecycles     (((F_CPU/1000)*w_onepulse    +500000)/1000000)
+  60:light_ws2812.c **** #define w_totalcycles   (((F_CPU/1000)*w_totalperiod +500000)/1000000)
+  61:light_ws2812.c **** 
+  62:light_ws2812.c **** // w1 - nops between rising edge and falling edge - low
+  63:light_ws2812.c **** #define w1 (w_zerocycles-w_fixedlow)
+  64:light_ws2812.c **** // w2   nops between fe low and fe high
+  65:light_ws2812.c **** #define w2 (w_onecycles-w_fixedhigh-w1)
+  66:light_ws2812.c **** // w3   nops to complete loop
+  67:light_ws2812.c **** #define w3 (w_totalcycles-w_fixedtotal-w1-w2)
+  68:light_ws2812.c **** 
+  69:light_ws2812.c **** #if w1>0
+  70:light_ws2812.c ****   #define w1_nops w1
+  71:light_ws2812.c **** #else
+  72:light_ws2812.c ****   #define w1_nops  0
+  73:light_ws2812.c **** #endif
+  74:light_ws2812.c **** 
+  75:light_ws2812.c **** // The only critical timing parameter is the minimum pulse length of the "0"
+  76:light_ws2812.c **** // Warn or throw error if this timing can not be met with current F_CPU settings.
+  77:light_ws2812.c **** #define w_lowtime ((w1_nops+w_fixedlow)*1000000)/(F_CPU/1000)
+  78:light_ws2812.c **** #if w_lowtime>550
+  79:light_ws2812.c ****    #error "Light_ws2812: Sorry, the clock speed is too low. Did you set F_CPU correctly?"
+  80:light_ws2812.c **** #elif w_lowtime>450
+  81:light_ws2812.c ****    #warning "Light_ws2812: The timing is critical and may only work on WS2812B, not on WS2812(S)."
+  82:light_ws2812.c ****    #warning "Please consider a higher clockspeed, if possible"
+  83:light_ws2812.c **** #endif   
+  84:light_ws2812.c **** 
+  85:light_ws2812.c **** #if w2>0
+  86:light_ws2812.c **** #define w2_nops w2
+  87:light_ws2812.c **** #else
+  88:light_ws2812.c **** #define w2_nops  0
+  89:light_ws2812.c **** #endif
+  90:light_ws2812.c **** 
+  91:light_ws2812.c **** #if w3>0
+  92:light_ws2812.c **** #define w3_nops w3
+  93:light_ws2812.c **** #else
+  94:light_ws2812.c **** #define w3_nops  0
+  95:light_ws2812.c **** #endif
+  96:light_ws2812.c **** 
+  97:light_ws2812.c **** #define w_nop1  "nop      \n\t"
+  98:light_ws2812.c **** #define w_nop2  "rjmp .+0 \n\t"
+  99:light_ws2812.c **** #define w_nop4  w_nop2 w_nop2
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 3
+
+
+ 100:light_ws2812.c **** #define w_nop8  w_nop4 w_nop4
+ 101:light_ws2812.c **** #define w_nop16 w_nop8 w_nop8
+ 102:light_ws2812.c **** 
+ 103:light_ws2812.c **** void inline ws2812_sendarray_mask(uint8_t *data,uint16_t datlen,uint8_t maskhi)
+ 104:light_ws2812.c **** {
+  16               		.loc 1 104 0
+  17               		.cfi_startproc
+  18               	.LVL0:
+  19               	/* prologue: function */
+  20               	/* frame size = 0 */
+  21               	/* stack size = 0 */
+  22               	.L__stack_usage = 0
+ 105:light_ws2812.c ****   uint8_t curbyte,ctr,masklo;
+ 106:light_ws2812.c ****   uint8_t sreg_prev;
+ 107:light_ws2812.c ****   
+ 108:light_ws2812.c ****   ws2812_DDRREG |= maskhi; // Enable output
+  23               		.loc 1 108 0
+  24 0000 27B3      		in r18,0x17
+  25 0002 242B      		or r18,r20
+  26 0004 27BB      		out 0x17,r18
+ 109:light_ws2812.c ****   
+ 110:light_ws2812.c ****   masklo	=~maskhi&ws2812_PORTREG;
+  27               		.loc 1 110 0
+  28 0006 38B3      		in r19,0x18
+  29 0008 242F      		mov r18,r20
+  30 000a 2095      		com r18
+  31 000c 2323      		and r18,r19
+  32               	.LVL1:
+ 111:light_ws2812.c ****   maskhi |=        ws2812_PORTREG;
+  33               		.loc 1 111 0
+  34 000e 38B3      		in r19,0x18
+  35               	.LVL2:
+  36 0010 342B      		or r19,r20
+  37               	.LVL3:
+ 112:light_ws2812.c ****   
+ 113:light_ws2812.c ****   sreg_prev=SREG;
+  38               		.loc 1 113 0
+  39 0012 4FB7      		in r20,__SREG__
+  40               	.LVL4:
+ 114:light_ws2812.c ****   cli();  
+  41               		.loc 1 114 0
+  42               	/* #APP */
+  43               	 ;  114 "light_ws2812.c" 1
+  44 0014 F894      		cli
+  45               	 ;  0 "" 2
+  46               	/* #NOAPP */
+  47 0016 FC01      		movw r30,r24
+  48 0018 680F      		add r22,r24
+  49 001a 791F      		adc r23,r25
+  50               	.LVL5:
+  51               	.L2:
+ 115:light_ws2812.c **** 
+ 116:light_ws2812.c ****   while (datlen--) {
+  52               		.loc 1 116 0 discriminator 1
+  53 001c E617      		cp r30,r22
+  54 001e F707      		cpc r31,r23
+  55 0020 01F0      		breq .L5
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 4
+
+
+  56               	.LVL6:
+ 117:light_ws2812.c ****     curbyte=*data++;
+  57               		.loc 1 117 0
+  58 0022 8191      		ld r24,Z+
+  59               	.LVL7:
+ 118:light_ws2812.c ****     
+ 119:light_ws2812.c ****     asm volatile(
+  60               		.loc 1 119 0
+  61               	/* #APP */
+  62               	 ;  119 "light_ws2812.c" 1
+  63 0024 98E0      		       ldi   r25,8  
+  64               		loop42:            
+  65 0026 38BB      		       out   24,r19 
+  66 0028 0000      		nop      
+  67 002a 00C0      		rjmp .+0 
+  68 002c 87FF      		       sbrs  r24,7  
+  69 002e 28BB      		       out   24,r18 
+  70 0030 880F      		       lsl   r24    
+  71 0032 00C0      		rjmp .+0 
+  72 0034 00C0      		rjmp .+0 
+  73 0036 00C0      		rjmp .+0 
+  74 0038 00C0      		rjmp .+0 
+  75 003a 28BB      		       out   24,r18 
+  76 003c 00C0      		rjmp .+0 
+  77 003e 9A95      		       dec   r25    
+  78 0040 01F4      		       brne  loop42
+  79               		
+  80               	 ;  0 "" 2
+  81               	.LVL8:
+  82               	/* #NOAPP */
+  83 0042 00C0      		rjmp .L2
+  84               	.LVL9:
+  85               	.L5:
+ 120:light_ws2812.c ****     "       ldi   %0,8  \n\t"
+ 121:light_ws2812.c ****     "loop%=:            \n\t"
+ 122:light_ws2812.c ****     "       out   %2,%3 \n\t"    //  '1' [01] '0' [01] - re
+ 123:light_ws2812.c **** #if (w1_nops&1)
+ 124:light_ws2812.c **** w_nop1
+ 125:light_ws2812.c **** #endif
+ 126:light_ws2812.c **** #if (w1_nops&2)
+ 127:light_ws2812.c **** w_nop2
+ 128:light_ws2812.c **** #endif
+ 129:light_ws2812.c **** #if (w1_nops&4)
+ 130:light_ws2812.c **** w_nop4
+ 131:light_ws2812.c **** #endif
+ 132:light_ws2812.c **** #if (w1_nops&8)
+ 133:light_ws2812.c **** w_nop8
+ 134:light_ws2812.c **** #endif
+ 135:light_ws2812.c **** #if (w1_nops&16)
+ 136:light_ws2812.c **** w_nop16
+ 137:light_ws2812.c **** #endif
+ 138:light_ws2812.c ****     "       sbrs  %1,7  \n\t"    //  '1' [03] '0' [02]
+ 139:light_ws2812.c ****     "       out   %2,%4 \n\t"    //  '1' [--] '0' [03] - fe-low
+ 140:light_ws2812.c ****     "       lsl   %1    \n\t"    //  '1' [04] '0' [04]
+ 141:light_ws2812.c **** #if (w2_nops&1)
+ 142:light_ws2812.c ****   w_nop1
+ 143:light_ws2812.c **** #endif
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 5
+
+
+ 144:light_ws2812.c **** #if (w2_nops&2)
+ 145:light_ws2812.c ****   w_nop2
+ 146:light_ws2812.c **** #endif
+ 147:light_ws2812.c **** #if (w2_nops&4)
+ 148:light_ws2812.c ****   w_nop4
+ 149:light_ws2812.c **** #endif
+ 150:light_ws2812.c **** #if (w2_nops&8)
+ 151:light_ws2812.c ****   w_nop8
+ 152:light_ws2812.c **** #endif
+ 153:light_ws2812.c **** #if (w2_nops&16)
+ 154:light_ws2812.c ****   w_nop16 
+ 155:light_ws2812.c **** #endif
+ 156:light_ws2812.c ****     "       out   %2,%4 \n\t"    //  '1' [+1] '0' [+1] - fe-high
+ 157:light_ws2812.c **** #if (w3_nops&1)
+ 158:light_ws2812.c **** w_nop1
+ 159:light_ws2812.c **** #endif
+ 160:light_ws2812.c **** #if (w3_nops&2)
+ 161:light_ws2812.c **** w_nop2
+ 162:light_ws2812.c **** #endif
+ 163:light_ws2812.c **** #if (w3_nops&4)
+ 164:light_ws2812.c **** w_nop4
+ 165:light_ws2812.c **** #endif
+ 166:light_ws2812.c **** #if (w3_nops&8)
+ 167:light_ws2812.c **** w_nop8
+ 168:light_ws2812.c **** #endif
+ 169:light_ws2812.c **** #if (w3_nops&16)
+ 170:light_ws2812.c **** w_nop16
+ 171:light_ws2812.c **** #endif
+ 172:light_ws2812.c **** 
+ 173:light_ws2812.c ****     "       dec   %0    \n\t"    //  '1' [+2] '0' [+2]
+ 174:light_ws2812.c ****     "       brne  loop%=\n\t"    //  '1' [+3] '0' [+4]
+ 175:light_ws2812.c ****     :	"=&d" (ctr)
+ 176:light_ws2812.c ****     :	"r" (curbyte), "I" (_SFR_IO_ADDR(ws2812_PORTREG)), "r" (maskhi), "r" (masklo)
+ 177:light_ws2812.c ****     );
+ 178:light_ws2812.c ****   }
+ 179:light_ws2812.c ****   
+ 180:light_ws2812.c ****   SREG=sreg_prev;
+  86               		.loc 1 180 0
+  87 0044 4FBF      		out __SREG__,r20
+  88 0046 0895      		ret
+  89               		.cfi_endproc
+  90               	.LFE10:
+  91               		.size	ws2812_sendarray_mask, .-ws2812_sendarray_mask
+  92               		.section	.text.ws2812_setleds_pin,"ax",@progbits
+  93               	.global	ws2812_setleds_pin
+  94               		.type	ws2812_setleds_pin, @function
+  95               	ws2812_setleds_pin:
+  96               	.LFB7:
+  25:light_ws2812.c **** {
+  97               		.loc 1 25 0
+  98               		.cfi_startproc
+  99               	.LVL10:
+ 100               	/* prologue: function */
+ 101               	/* frame size = 0 */
+ 102               	/* stack size = 0 */
+ 103               	.L__stack_usage = 0
+  26:light_ws2812.c ****   ws2812_sendarray_mask((uint8_t*)ledarray,leds+leds+leds,pinmask);
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 6
+
+
+ 104               		.loc 1 26 0
+ 105 0000 9B01      		movw r18,r22
+ 106 0002 220F      		lsl r18
+ 107 0004 331F      		rol r19
+ 108 0006 260F      		add r18,r22
+ 109 0008 371F      		adc r19,r23
+ 110 000a B901      		movw r22,r18
+ 111               	.LVL11:
+ 112 000c 00D0      		rcall ws2812_sendarray_mask
+ 113               	.LVL12:
+ 114               	.LBB6:
+ 115               	.LBB7:
+ 116               		.file 2 "/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h"
+   1:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** /* Copyright (c) 2002, Marek Michalkiewicz
+   2:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Copyright (c) 2004,2005,2007 Joerg Wunsch
+   3:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Copyright (c) 2007  Florin-Viorel Petrov
+   4:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    All rights reserved.
+   5:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+   6:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Redistribution and use in source and binary forms, with or without
+   7:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    modification, are permitted provided that the following conditions are met:
+   8:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+   9:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    * Redistributions of source code must retain the above copyright
+  10:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****      notice, this list of conditions and the following disclaimer.
+  11:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  12:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    * Redistributions in binary form must reproduce the above copyright
+  13:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****      notice, this list of conditions and the following disclaimer in
+  14:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****      the documentation and/or other materials provided with the
+  15:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****      distribution.
+  16:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  17:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    * Neither the name of the copyright holders nor the names of
+  18:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****      contributors may be used to endorse or promote products derived
+  19:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****      from this software without specific prior written permission.
+  20:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  21:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  22:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  23:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  24:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+  25:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  26:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  27:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  28:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  29:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  30:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  31:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   POSSIBILITY OF SUCH DAMAGE. */
+  32:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  33:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** /* $Id$ */
+  34:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  35:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #ifndef _UTIL_DELAY_H_
+  36:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #define _UTIL_DELAY_H_ 1
+  37:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  38:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #ifndef __HAS_DELAY_CYCLES
+  39:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #define __HAS_DELAY_CYCLES 1
+  40:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #endif
+  41:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  42:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #include <inttypes.h>
+  43:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #include <util/delay_basic.h>
+  44:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #include <math.h>
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 7
+
+
+  45:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  46:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** /** \file */
+  47:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** /** \defgroup util_delay <util/delay.h>: Convenience functions for busy-wait delay loops
+  48:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     \code
+  49:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     #define F_CPU 1000000UL  // 1 MHz
+  50:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     //#define F_CPU 14.7456E6
+  51:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     #include <util/delay.h>
+  52:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     \endcode
+  53:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  54:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     \note As an alternative method, it is possible to pass the
+  55:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     F_CPU macro down to the compiler from the Makefile.
+  56:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     Obviously, in that case, no \c \#define statement should be
+  57:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     used.
+  58:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  59:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     The functions in this header file are wrappers around the basic
+  60:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     busy-wait functions from <util/delay_basic.h>.  They are meant as
+  61:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     convenience functions where actual time values can be specified
+  62:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     rather than a number of cycles to wait for.  The idea behind is
+  63:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     that compile-time constant expressions will be eliminated by
+  64:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     compiler optimization so floating-point expressions can be used
+  65:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     to calculate the number of delay cycles needed based on the CPU
+  66:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     frequency passed by the macro F_CPU.
+  67:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  68:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     \note In order for these functions to work as intended, compiler
+  69:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     optimizations <em>must</em> be enabled, and the delay time
+  70:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     <em>must</em> be an expression that is a known constant at
+  71:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     compile-time.  If these requirements are not met, the resulting
+  72:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     delay will be much longer (and basically unpredictable), and
+  73:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     applications that otherwise do not use floating-point calculations
+  74:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     will experience severe code bloat by the floating-point library
+  75:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     routines linked into the application.
+  76:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  77:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     The functions available allow the specification of microsecond, and
+  78:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     millisecond delays directly, using the application-supplied macro
+  79:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     F_CPU as the CPU clock frequency (in Hertz).
+  80:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  81:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** */
+  82:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  83:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #if !defined(__DOXYGEN__)
+  84:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** static inline void _delay_us(double __us) __attribute__((always_inline));
+  85:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** static inline void _delay_ms(double __ms) __attribute__((always_inline));
+  86:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #endif
+  87:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  88:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #ifndef F_CPU
+  89:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** /* prevent compiler error by supplying a default */
+  90:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** # warning "F_CPU not defined for <util/delay.h>"
+  91:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** # define F_CPU 1000000UL
+  92:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #endif
+  93:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  94:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #ifndef __OPTIMIZE__
+  95:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** # warning "Compiler optimizations disabled; functions from <util/delay.h> won't work as designed"
+  96:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #endif
+  97:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+  98:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+  99:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   !defined(__DELAY_BACKWARD_COMPATIBLE__) &&	   \
+ 100:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   __STDC_HOSTED__
+ 101:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #  include <math.h>
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 8
+
+
+ 102:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #endif
+ 103:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 104:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** /**
+ 105:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    \ingroup util_delay
+ 106:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 107:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Perform a delay of \c __ms milliseconds, using _delay_loop_2().
+ 108:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 109:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    The macro F_CPU is supposed to be defined to a
+ 110:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    constant defining the CPU clock frequency (in Hertz).
+ 111:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 112:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    The maximal possible delay is 262.14 ms / F_CPU in MHz.
+ 113:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 114:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    When the user request delay which exceed the maximum possible one,
+ 115:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    _delay_ms() provides a decreased resolution functionality. In this
+ 116:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    mode _delay_ms() will work with a resolution of 1/10 ms, providing
+ 117:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    delays up to 6.5535 seconds (independent from CPU frequency).  The
+ 118:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    user will not be informed about decreased resolution.
+ 119:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 120:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    If the avr-gcc toolchain has __builtin_avr_delay_cycles(unsigned long)
+ 121:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    support, maximal possible delay is 4294967.295 ms/ F_CPU in MHz. For
+ 122:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    values greater than the maximal possible delay, overflows results in
+ 123:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    no delay i.e., 0ms.
+ 124:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 125:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Conversion of __us into clock cycles may not always result in integer.
+ 126:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    By default, the clock cycles rounded up to next integer. This ensures that
+ 127:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    the user gets atleast __us microseconds of delay.
+ 128:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 129:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Alternatively, user can define __DELAY_ROUND_DOWN__ and __DELAY_ROUND_CLOSEST__
+ 130:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    to round down and round to closest integer.
+ 131:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 132:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Note: The new implementation of _delay_ms(double __ms) with 
+ 133:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     __builtin_avr_delay_cycles(unsigned long) support is not backward compatible. 
+ 134:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    User can define __DELAY_BACKWARD_COMPATIBLE__ to get a backward compatible delay.
+ 135:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Also, the backward compatible
+ 136:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    algorithm will be chosen if the code is compiled in a <em>freestanding
+ 137:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    environment</em> (GCC option \c -ffreestanding), as the math functions
+ 138:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    required for rounding are not available to the compiler then.
+ 139:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 140:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****  */
+ 141:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** void
+ 142:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** _delay_ms(double __ms)
+ 143:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** {
+ 144:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	double __tmp ; 
+ 145:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 146:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   !defined(__DELAY_BACKWARD_COMPATIBLE__) &&	   \
+ 147:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   __STDC_HOSTED__
+ 148:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	uint32_t __ticks_dc;
+ 149:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 150:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	__tmp = ((F_CPU) / 1e3) * __ms;
+ 151:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 152:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	#if defined(__DELAY_ROUND_DOWN__)
+ 153:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		__ticks_dc = (uint32_t)fabs(__tmp);
+ 154:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 155:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	#elif defined(__DELAY_ROUND_CLOSEST__)
+ 156:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		__ticks_dc = (uint32_t)(fabs(__tmp)+0.5);
+ 157:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 158:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	#else
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 9
+
+
+ 159:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		//round up by default
+ 160:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		__ticks_dc = (uint32_t)(ceil(fabs(__tmp)));
+ 161:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	#endif
+ 162:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 163:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	__builtin_avr_delay_cycles(__ticks_dc);
+ 164:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 165:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #else
+ 166:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	uint16_t __ticks;
+ 167:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	__tmp = ((F_CPU) / 4e3) * __ms;
+ 168:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	if (__tmp < 1.0)
+ 169:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		__ticks = 1;
+ 170:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	else if (__tmp > 65535)
+ 171:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	{
+ 172:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		//	__ticks = requested delay in 1/10 ms
+ 173:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		__ticks = (uint16_t) (__ms * 10.0);
+ 174:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		while(__ticks)
+ 175:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		{
+ 176:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 			// wait 1/10 ms
+ 177:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 			_delay_loop_2(((F_CPU) / 4e3) / 10);
+ 178:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 			__ticks --;
+ 179:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		}
+ 180:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		return;
+ 181:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	}
+ 182:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	else
+ 183:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		__ticks = (uint16_t)__tmp;
+ 184:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	_delay_loop_2(__ticks);
+ 185:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #endif
+ 186:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** }
+ 187:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 188:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** /**
+ 189:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    \ingroup util_delay
+ 190:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 191:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Perform a delay of \c __us microseconds, using _delay_loop_1().
+ 192:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 193:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    The macro F_CPU is supposed to be defined to a
+ 194:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    constant defining the CPU clock frequency (in Hertz).
+ 195:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 196:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    The maximal possible delay is 768 us / F_CPU in MHz.
+ 197:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 198:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    If the user requests a delay greater than the maximal possible one,
+ 199:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    _delay_us() will automatically call _delay_ms() instead.  The user
+ 200:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    will not be informed about this case.
+ 201:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 202:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    If the avr-gcc toolchain has __builtin_avr_delay_cycles(unsigned long)
+ 203:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    support, maximal possible delay is 4294967.295 us/ F_CPU in MHz. For
+ 204:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    values greater than the maximal possible delay, overflow results in
+ 205:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    no delay i.e., 0us.
+ 206:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   
+ 207:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Conversion of __us into clock cycles may not always result in integer.
+ 208:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    By default, the clock cycles rounded up to next integer. This ensures that
+ 209:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    the user gets atleast __us microseconds of delay.
+ 210:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 211:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Alternatively, user can define __DELAY_ROUND_DOWN__ and __DELAY_ROUND_CLOSEST__
+ 212:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    to round down and round to closest integer.
+ 213:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****  
+ 214:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Note: The new implementation of _delay_us(double __us) with 
+ 215:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****     __builtin_avr_delay_cycles(unsigned long) support is not backward compatible.
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 10
+
+
+ 216:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    User can define __DELAY_BACKWARD_COMPATIBLE__ to get a backward compatible delay.
+ 217:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    Also, the backward compatible
+ 218:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    algorithm will be chosen if the code is compiled in a <em>freestanding
+ 219:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    environment</em> (GCC option \c -ffreestanding), as the math functions
+ 220:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****    required for rounding are not available to the compiler then.
+ 221:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 222:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****  */
+ 223:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** void
+ 224:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** _delay_us(double __us)
+ 225:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** {
+ 226:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	double __tmp ; 
+ 227:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 228:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   !defined(__DELAY_BACKWARD_COMPATIBLE__) &&	   \
+ 229:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h ****   __STDC_HOSTED__
+ 230:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	uint32_t __ticks_dc;
+ 231:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 232:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	__tmp = ((F_CPU) / 1e6) * __us;
+ 233:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 234:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	#if defined(__DELAY_ROUND_DOWN__)
+ 235:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		__ticks_dc = (uint32_t)fabs(__tmp);
+ 236:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 237:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	#elif defined(__DELAY_ROUND_CLOSEST__)
+ 238:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		__ticks_dc = (uint32_t)(fabs(__tmp)+0.5);
+ 239:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 240:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	#else
+ 241:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		//round up by default
+ 242:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 		__ticks_dc = (uint32_t)(ceil(fabs(__tmp)));
+ 243:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	#endif
+ 244:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 
+ 245:/usr/local/CrossPack-AVR-20131216/avr/include/util/delay.h **** 	__builtin_avr_delay_cycles(__ticks_dc);
+ 117               		.loc 2 245 0
+ 118 000e 8EEC      		ldi r24,lo8(206)
+ 119 0010 90E0      		ldi r25,hi8(206)
+ 120 0012 0197      		1: sbiw r24,1
+ 121 0014 01F4      		brne 1b
+ 122 0016 0895      		ret
+ 123               	.LBE7:
+ 124               	.LBE6:
+ 125               		.cfi_endproc
+ 126               	.LFE7:
+ 127               		.size	ws2812_setleds_pin, .-ws2812_setleds_pin
+ 128               		.section	.text.ws2812_setleds,"ax",@progbits
+ 129               	.global	ws2812_setleds
+ 130               		.type	ws2812_setleds, @function
+ 131               	ws2812_setleds:
+ 132               	.LFB6:
+  20:light_ws2812.c **** {
+ 133               		.loc 1 20 0
+ 134               		.cfi_startproc
+ 135               	.LVL13:
+ 136               	/* prologue: function */
+ 137               	/* frame size = 0 */
+ 138               	/* stack size = 0 */
+ 139               	.L__stack_usage = 0
+  21:light_ws2812.c ****    ws2812_setleds_pin(ledarray,leds, _BV(ws2812_pin));
+ 140               		.loc 1 21 0
+ 141 0000 42E0      		ldi r20,lo8(2)
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 11
+
+
+ 142 0002 00C0      		rjmp ws2812_setleds_pin
+ 143               	.LVL14:
+ 144               		.cfi_endproc
+ 145               	.LFE6:
+ 146               		.size	ws2812_setleds, .-ws2812_setleds
+ 147               		.section	.text.ws2812_setleds_rgbw,"ax",@progbits
+ 148               	.global	ws2812_setleds_rgbw
+ 149               		.type	ws2812_setleds_rgbw, @function
+ 150               	ws2812_setleds_rgbw:
+ 151               	.LFB8:
+  32:light_ws2812.c **** {
+ 152               		.loc 1 32 0
+ 153               		.cfi_startproc
+ 154               	.LVL15:
+ 155               	/* prologue: function */
+ 156               	/* frame size = 0 */
+ 157               	/* stack size = 0 */
+ 158               	.L__stack_usage = 0
+  33:light_ws2812.c ****   ws2812_sendarray_mask((uint8_t*)ledarray,leds<<2,_BV(ws2812_pin));
+ 159               		.loc 1 33 0
+ 160 0000 660F      		lsl r22
+ 161 0002 771F      		rol r23
+ 162 0004 660F      		lsl r22
+ 163 0006 771F      		rol r23
+ 164               	.LVL16:
+ 165 0008 42E0      		ldi r20,lo8(2)
+ 166 000a 00D0      		rcall ws2812_sendarray_mask
+ 167               	.LVL17:
+ 168               	.LBB8:
+ 169               	.LBB9:
+ 170               		.loc 2 245 0
+ 171 000c 89E4      		ldi r24,lo8(329)
+ 172 000e 91E0      		ldi r25,hi8(329)
+ 173 0010 0197      		1: sbiw r24,1
+ 174 0012 01F4      		brne 1b
+ 175 0014 00C0      		rjmp .
+ 176 0016 0000      		nop
+ 177 0018 0895      		ret
+ 178               	.LBE9:
+ 179               	.LBE8:
+ 180               		.cfi_endproc
+ 181               	.LFE8:
+ 182               		.size	ws2812_setleds_rgbw, .-ws2812_setleds_rgbw
+ 183               		.section	.text.ws2812_sendarray,"ax",@progbits
+ 184               	.global	ws2812_sendarray
+ 185               		.type	ws2812_sendarray, @function
+ 186               	ws2812_sendarray:
+ 187               	.LFB9:
+  38:light_ws2812.c **** {
+ 188               		.loc 1 38 0
+ 189               		.cfi_startproc
+ 190               	.LVL18:
+ 191               	/* prologue: function */
+ 192               	/* frame size = 0 */
+ 193               	/* stack size = 0 */
+ 194               	.L__stack_usage = 0
+  39:light_ws2812.c ****   ws2812_sendarray_mask(data,datlen,_BV(ws2812_pin));
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 12
+
+
+ 195               		.loc 1 39 0
+ 196 0000 42E0      		ldi r20,lo8(2)
+ 197 0002 00C0      		rjmp ws2812_sendarray_mask
+ 198               	.LVL19:
+ 199               		.cfi_endproc
+ 200               	.LFE9:
+ 201               		.size	ws2812_sendarray, .-ws2812_sendarray
+ 202               		.text
+ 203               	.Letext0:
+ 204               		.file 3 "/usr/local/CrossPack-AVR-20131216/avr/include/stdint.h"
+ 205               		.file 4 "light_ws2812.h"
+ 206               		.section	.debug_info,"",@progbits
+ 207               	.Ldebug_info0:
+ 208 0000 C003 0000 		.long	0x3c0
+ 209 0004 0200      		.word	0x2
+ 210 0006 0000 0000 		.long	.Ldebug_abbrev0
+ 211 000a 04        		.byte	0x4
+ 212 000b 01        		.uleb128 0x1
+ 213 000c 0000 0000 		.long	.LASF28
+ 214 0010 01        		.byte	0x1
+ 215 0011 0000 0000 		.long	.LASF29
+ 216 0015 0000 0000 		.long	.LASF30
+ 217 0019 0000 0000 		.long	.Ldebug_ranges0+0
+ 218 001d 0000 0000 		.long	0
+ 219 0021 0000 0000 		.long	0
+ 220 0025 0000 0000 		.long	.Ldebug_line0
+ 221 0029 02        		.uleb128 0x2
+ 222 002a 01        		.byte	0x1
+ 223 002b 06        		.byte	0x6
+ 224 002c 0000 0000 		.long	.LASF0
+ 225 0030 03        		.uleb128 0x3
+ 226 0031 0000 0000 		.long	.LASF2
+ 227 0035 03        		.byte	0x3
+ 228 0036 7A        		.byte	0x7a
+ 229 0037 3B00 0000 		.long	0x3b
+ 230 003b 02        		.uleb128 0x2
+ 231 003c 01        		.byte	0x1
+ 232 003d 08        		.byte	0x8
+ 233 003e 0000 0000 		.long	.LASF1
+ 234 0042 04        		.uleb128 0x4
+ 235 0043 02        		.byte	0x2
+ 236 0044 05        		.byte	0x5
+ 237 0045 696E 7400 		.string	"int"
+ 238 0049 03        		.uleb128 0x3
+ 239 004a 0000 0000 		.long	.LASF3
+ 240 004e 03        		.byte	0x3
+ 241 004f 7C        		.byte	0x7c
+ 242 0050 5400 0000 		.long	0x54
+ 243 0054 02        		.uleb128 0x2
+ 244 0055 02        		.byte	0x2
+ 245 0056 07        		.byte	0x7
+ 246 0057 0000 0000 		.long	.LASF4
+ 247 005b 02        		.uleb128 0x2
+ 248 005c 04        		.byte	0x4
+ 249 005d 05        		.byte	0x5
+ 250 005e 0000 0000 		.long	.LASF5
+ 251 0062 03        		.uleb128 0x3
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 13
+
+
+ 252 0063 0000 0000 		.long	.LASF6
+ 253 0067 03        		.byte	0x3
+ 254 0068 7E        		.byte	0x7e
+ 255 0069 6D00 0000 		.long	0x6d
+ 256 006d 02        		.uleb128 0x2
+ 257 006e 04        		.byte	0x4
+ 258 006f 07        		.byte	0x7
+ 259 0070 0000 0000 		.long	.LASF7
+ 260 0074 02        		.uleb128 0x2
+ 261 0075 08        		.byte	0x8
+ 262 0076 05        		.byte	0x5
+ 263 0077 0000 0000 		.long	.LASF8
+ 264 007b 02        		.uleb128 0x2
+ 265 007c 08        		.byte	0x8
+ 266 007d 07        		.byte	0x7
+ 267 007e 0000 0000 		.long	.LASF9
+ 268 0082 05        		.uleb128 0x5
+ 269 0083 0000 0000 		.long	.LASF10
+ 270 0087 03        		.byte	0x3
+ 271 0088 04        		.byte	0x4
+ 272 0089 1B        		.byte	0x1b
+ 273 008a B300 0000 		.long	0xb3
+ 274 008e 06        		.uleb128 0x6
+ 275 008f 6700      		.string	"g"
+ 276 0091 04        		.byte	0x4
+ 277 0092 1B        		.byte	0x1b
+ 278 0093 3000 0000 		.long	0x30
+ 279 0097 02        		.byte	0x2
+ 280 0098 23        		.byte	0x23
+ 281 0099 00        		.uleb128 0
+ 282 009a 06        		.uleb128 0x6
+ 283 009b 7200      		.string	"r"
+ 284 009d 04        		.byte	0x4
+ 285 009e 1B        		.byte	0x1b
+ 286 009f 3000 0000 		.long	0x30
+ 287 00a3 02        		.byte	0x2
+ 288 00a4 23        		.byte	0x23
+ 289 00a5 01        		.uleb128 0x1
+ 290 00a6 06        		.uleb128 0x6
+ 291 00a7 6200      		.string	"b"
+ 292 00a9 04        		.byte	0x4
+ 293 00aa 1B        		.byte	0x1b
+ 294 00ab 3000 0000 		.long	0x30
+ 295 00af 02        		.byte	0x2
+ 296 00b0 23        		.byte	0x23
+ 297 00b1 02        		.uleb128 0x2
+ 298 00b2 00        		.byte	0
+ 299 00b3 05        		.uleb128 0x5
+ 300 00b4 0000 0000 		.long	.LASF11
+ 301 00b8 04        		.byte	0x4
+ 302 00b9 04        		.byte	0x4
+ 303 00ba 1C        		.byte	0x1c
+ 304 00bb F000 0000 		.long	0xf0
+ 305 00bf 06        		.uleb128 0x6
+ 306 00c0 6700      		.string	"g"
+ 307 00c2 04        		.byte	0x4
+ 308 00c3 1C        		.byte	0x1c
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 14
+
+
+ 309 00c4 3000 0000 		.long	0x30
+ 310 00c8 02        		.byte	0x2
+ 311 00c9 23        		.byte	0x23
+ 312 00ca 00        		.uleb128 0
+ 313 00cb 06        		.uleb128 0x6
+ 314 00cc 7200      		.string	"r"
+ 315 00ce 04        		.byte	0x4
+ 316 00cf 1C        		.byte	0x1c
+ 317 00d0 3000 0000 		.long	0x30
+ 318 00d4 02        		.byte	0x2
+ 319 00d5 23        		.byte	0x23
+ 320 00d6 01        		.uleb128 0x1
+ 321 00d7 06        		.uleb128 0x6
+ 322 00d8 6200      		.string	"b"
+ 323 00da 04        		.byte	0x4
+ 324 00db 1C        		.byte	0x1c
+ 325 00dc 3000 0000 		.long	0x30
+ 326 00e0 02        		.byte	0x2
+ 327 00e1 23        		.byte	0x23
+ 328 00e2 02        		.uleb128 0x2
+ 329 00e3 06        		.uleb128 0x6
+ 330 00e4 7700      		.string	"w"
+ 331 00e6 04        		.byte	0x4
+ 332 00e7 1C        		.byte	0x1c
+ 333 00e8 3000 0000 		.long	0x30
+ 334 00ec 02        		.byte	0x2
+ 335 00ed 23        		.byte	0x23
+ 336 00ee 03        		.uleb128 0x3
+ 337 00ef 00        		.byte	0
+ 338 00f0 07        		.uleb128 0x7
+ 339 00f1 0000 0000 		.long	.LASF31
+ 340 00f5 02        		.byte	0x2
+ 341 00f6 E0        		.byte	0xe0
+ 342 00f7 01        		.byte	0x1
+ 343 00f8 03        		.byte	0x3
+ 344 00f9 2901 0000 		.long	0x129
+ 345 00fd 08        		.uleb128 0x8
+ 346 00fe 0000 0000 		.long	.LASF32
+ 347 0102 02        		.byte	0x2
+ 348 0103 E0        		.byte	0xe0
+ 349 0104 2901 0000 		.long	0x129
+ 350 0108 09        		.uleb128 0x9
+ 351 0109 0000 0000 		.long	.LASF12
+ 352 010d 02        		.byte	0x2
+ 353 010e E2        		.byte	0xe2
+ 354 010f 2901 0000 		.long	0x129
+ 355 0113 09        		.uleb128 0x9
+ 356 0114 0000 0000 		.long	.LASF13
+ 357 0118 02        		.byte	0x2
+ 358 0119 E6        		.byte	0xe6
+ 359 011a 6200 0000 		.long	0x62
+ 360 011e 0A        		.uleb128 0xa
+ 361 011f 01        		.byte	0x1
+ 362 0120 0000 0000 		.long	.LASF33
+ 363 0124 02        		.byte	0x2
+ 364 0125 E7        		.byte	0xe7
+ 365 0126 01        		.byte	0x1
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 15
+
+
+ 366 0127 00        		.byte	0
+ 367 0128 00        		.byte	0
+ 368 0129 02        		.uleb128 0x2
+ 369 012a 04        		.byte	0x4
+ 370 012b 04        		.byte	0x4
+ 371 012c 0000 0000 		.long	.LASF14
+ 372 0130 0B        		.uleb128 0xb
+ 373 0131 01        		.byte	0x1
+ 374 0132 0000 0000 		.long	.LASF21
+ 375 0136 01        		.byte	0x1
+ 376 0137 67        		.byte	0x67
+ 377 0138 01        		.byte	0x1
+ 378 0139 0000 0000 		.long	.LFB10
+ 379 013d 0000 0000 		.long	.LFE10
+ 380 0141 03        		.byte	0x3
+ 381 0142 92        		.byte	0x92
+ 382 0143 20        		.uleb128 0x20
+ 383 0144 02        		.sleb128 2
+ 384 0145 01        		.byte	0x1
+ 385 0146 AC01 0000 		.long	0x1ac
+ 386 014a 0C        		.uleb128 0xc
+ 387 014b 0000 0000 		.long	.LASF15
+ 388 014f 01        		.byte	0x1
+ 389 0150 67        		.byte	0x67
+ 390 0151 AC01 0000 		.long	0x1ac
+ 391 0155 0000 0000 		.long	.LLST0
+ 392 0159 0C        		.uleb128 0xc
+ 393 015a 0000 0000 		.long	.LASF16
+ 394 015e 01        		.byte	0x1
+ 395 015f 67        		.byte	0x67
+ 396 0160 4900 0000 		.long	0x49
+ 397 0164 0000 0000 		.long	.LLST1
+ 398 0168 0C        		.uleb128 0xc
+ 399 0169 0000 0000 		.long	.LASF17
+ 400 016d 01        		.byte	0x1
+ 401 016e 67        		.byte	0x67
+ 402 016f 3000 0000 		.long	0x30
+ 403 0173 0000 0000 		.long	.LLST2
+ 404 0177 0D        		.uleb128 0xd
+ 405 0178 0000 0000 		.long	.LASF18
+ 406 017c 01        		.byte	0x1
+ 407 017d 69        		.byte	0x69
+ 408 017e 3000 0000 		.long	0x30
+ 409 0182 0000 0000 		.long	.LLST3
+ 410 0186 0E        		.uleb128 0xe
+ 411 0187 6374 7200 		.string	"ctr"
+ 412 018b 01        		.byte	0x1
+ 413 018c 69        		.byte	0x69
+ 414 018d 3000 0000 		.long	0x30
+ 415 0191 0F        		.uleb128 0xf
+ 416 0192 0000 0000 		.long	.LASF19
+ 417 0196 01        		.byte	0x1
+ 418 0197 69        		.byte	0x69
+ 419 0198 3000 0000 		.long	0x30
+ 420 019c 01        		.byte	0x1
+ 421 019d 62        		.byte	0x62
+ 422 019e 0F        		.uleb128 0xf
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 16
+
+
+ 423 019f 0000 0000 		.long	.LASF20
+ 424 01a3 01        		.byte	0x1
+ 425 01a4 6A        		.byte	0x6a
+ 426 01a5 3000 0000 		.long	0x30
+ 427 01a9 01        		.byte	0x1
+ 428 01aa 64        		.byte	0x64
+ 429 01ab 00        		.byte	0
+ 430 01ac 10        		.uleb128 0x10
+ 431 01ad 02        		.byte	0x2
+ 432 01ae 3000 0000 		.long	0x30
+ 433 01b2 0B        		.uleb128 0xb
+ 434 01b3 01        		.byte	0x1
+ 435 01b4 0000 0000 		.long	.LASF22
+ 436 01b8 01        		.byte	0x1
+ 437 01b9 18        		.byte	0x18
+ 438 01ba 01        		.byte	0x1
+ 439 01bb 0000 0000 		.long	.LFB7
+ 440 01bf 0000 0000 		.long	.LFE7
+ 441 01c3 03        		.byte	0x3
+ 442 01c4 92        		.byte	0x92
+ 443 01c5 20        		.uleb128 0x20
+ 444 01c6 02        		.sleb128 2
+ 445 01c7 01        		.byte	0x1
+ 446 01c8 5E02 0000 		.long	0x25e
+ 447 01cc 0C        		.uleb128 0xc
+ 448 01cd 0000 0000 		.long	.LASF23
+ 449 01d1 01        		.byte	0x1
+ 450 01d2 18        		.byte	0x18
+ 451 01d3 5E02 0000 		.long	0x25e
+ 452 01d7 0000 0000 		.long	.LLST4
+ 453 01db 0C        		.uleb128 0xc
+ 454 01dc 0000 0000 		.long	.LASF24
+ 455 01e0 01        		.byte	0x1
+ 456 01e1 18        		.byte	0x18
+ 457 01e2 4900 0000 		.long	0x49
+ 458 01e6 0000 0000 		.long	.LLST5
+ 459 01ea 0C        		.uleb128 0xc
+ 460 01eb 0000 0000 		.long	.LASF25
+ 461 01ef 01        		.byte	0x1
+ 462 01f0 18        		.byte	0x18
+ 463 01f1 3000 0000 		.long	0x30
+ 464 01f5 0000 0000 		.long	.LLST6
+ 465 01f9 11        		.uleb128 0x11
+ 466 01fa F000 0000 		.long	0xf0
+ 467 01fe 0000 0000 		.long	.LBB6
+ 468 0202 0000 0000 		.long	.LBE6
+ 469 0206 01        		.byte	0x1
+ 470 0207 1B        		.byte	0x1b
+ 471 0208 3202 0000 		.long	0x232
+ 472 020c 12        		.uleb128 0x12
+ 473 020d FD00 0000 		.long	0xfd
+ 474 0211 04        		.byte	0x4
+ 475 0212 0000 4842 		.long	0x42480000
+ 476 0216 13        		.uleb128 0x13
+ 477 0217 0000 0000 		.long	.LBB7
+ 478 021b 0000 0000 		.long	.LBE7
+ 479 021f 14        		.uleb128 0x14
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 17
+
+
+ 480 0220 0801 0000 		.long	0x108
+ 481 0224 04        		.byte	0x4
+ 482 0225 0040 4E44 		.long	0x444e4000
+ 483 0229 15        		.uleb128 0x15
+ 484 022a 1301 0000 		.long	0x113
+ 485 022e 3903      		.word	0x339
+ 486 0230 00        		.byte	0
+ 487 0231 00        		.byte	0
+ 488 0232 16        		.uleb128 0x16
+ 489 0233 0000 0000 		.long	.LVL12
+ 490 0237 3001 0000 		.long	0x130
+ 491 023b 17        		.uleb128 0x17
+ 492 023c 06        		.byte	0x6
+ 493 023d 68        		.byte	0x68
+ 494 023e 93        		.byte	0x93
+ 495 023f 01        		.uleb128 0x1
+ 496 0240 69        		.byte	0x69
+ 497 0241 93        		.byte	0x93
+ 498 0242 01        		.uleb128 0x1
+ 499 0243 03        		.byte	0x3
+ 500 0244 F3        		.byte	0xf3
+ 501 0245 01        		.uleb128 0x1
+ 502 0246 68        		.byte	0x68
+ 503 0247 17        		.uleb128 0x17
+ 504 0248 06        		.byte	0x6
+ 505 0249 66        		.byte	0x66
+ 506 024a 93        		.byte	0x93
+ 507 024b 01        		.uleb128 0x1
+ 508 024c 67        		.byte	0x67
+ 509 024d 93        		.byte	0x93
+ 510 024e 01        		.uleb128 0x1
+ 511 024f 05        		.byte	0x5
+ 512 0250 F3        		.byte	0xf3
+ 513 0251 01        		.uleb128 0x1
+ 514 0252 66        		.byte	0x66
+ 515 0253 33        		.byte	0x33
+ 516 0254 1E        		.byte	0x1e
+ 517 0255 17        		.uleb128 0x17
+ 518 0256 01        		.byte	0x1
+ 519 0257 64        		.byte	0x64
+ 520 0258 03        		.byte	0x3
+ 521 0259 F3        		.byte	0xf3
+ 522 025a 01        		.uleb128 0x1
+ 523 025b 64        		.byte	0x64
+ 524 025c 00        		.byte	0
+ 525 025d 00        		.byte	0
+ 526 025e 10        		.uleb128 0x10
+ 527 025f 02        		.byte	0x2
+ 528 0260 8200 0000 		.long	0x82
+ 529 0264 0B        		.uleb128 0xb
+ 530 0265 01        		.byte	0x1
+ 531 0266 0000 0000 		.long	.LASF26
+ 532 026a 01        		.byte	0x1
+ 533 026b 13        		.byte	0x13
+ 534 026c 01        		.byte	0x1
+ 535 026d 0000 0000 		.long	.LFB6
+ 536 0271 0000 0000 		.long	.LFE6
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 18
+
+
+ 537 0275 03        		.byte	0x3
+ 538 0276 92        		.byte	0x92
+ 539 0277 20        		.uleb128 0x20
+ 540 0278 02        		.sleb128 2
+ 541 0279 01        		.byte	0x1
+ 542 027a C502 0000 		.long	0x2c5
+ 543 027e 0C        		.uleb128 0xc
+ 544 027f 0000 0000 		.long	.LASF23
+ 545 0283 01        		.byte	0x1
+ 546 0284 13        		.byte	0x13
+ 547 0285 5E02 0000 		.long	0x25e
+ 548 0289 0000 0000 		.long	.LLST7
+ 549 028d 0C        		.uleb128 0xc
+ 550 028e 0000 0000 		.long	.LASF24
+ 551 0292 01        		.byte	0x1
+ 552 0293 13        		.byte	0x13
+ 553 0294 4900 0000 		.long	0x49
+ 554 0298 0000 0000 		.long	.LLST8
+ 555 029c 18        		.uleb128 0x18
+ 556 029d 0000 0000 		.long	.LVL14
+ 557 02a1 01        		.byte	0x1
+ 558 02a2 B201 0000 		.long	0x1b2
+ 559 02a6 17        		.uleb128 0x17
+ 560 02a7 06        		.byte	0x6
+ 561 02a8 68        		.byte	0x68
+ 562 02a9 93        		.byte	0x93
+ 563 02aa 01        		.uleb128 0x1
+ 564 02ab 69        		.byte	0x69
+ 565 02ac 93        		.byte	0x93
+ 566 02ad 01        		.uleb128 0x1
+ 567 02ae 03        		.byte	0x3
+ 568 02af F3        		.byte	0xf3
+ 569 02b0 01        		.uleb128 0x1
+ 570 02b1 68        		.byte	0x68
+ 571 02b2 17        		.uleb128 0x17
+ 572 02b3 06        		.byte	0x6
+ 573 02b4 66        		.byte	0x66
+ 574 02b5 93        		.byte	0x93
+ 575 02b6 01        		.uleb128 0x1
+ 576 02b7 67        		.byte	0x67
+ 577 02b8 93        		.byte	0x93
+ 578 02b9 01        		.uleb128 0x1
+ 579 02ba 03        		.byte	0x3
+ 580 02bb F3        		.byte	0xf3
+ 581 02bc 01        		.uleb128 0x1
+ 582 02bd 66        		.byte	0x66
+ 583 02be 17        		.uleb128 0x17
+ 584 02bf 01        		.byte	0x1
+ 585 02c0 64        		.byte	0x64
+ 586 02c1 01        		.byte	0x1
+ 587 02c2 32        		.byte	0x32
+ 588 02c3 00        		.byte	0
+ 589 02c4 00        		.byte	0
+ 590 02c5 0B        		.uleb128 0xb
+ 591 02c6 01        		.byte	0x1
+ 592 02c7 0000 0000 		.long	.LASF27
+ 593 02cb 01        		.byte	0x1
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 19
+
+
+ 594 02cc 1F        		.byte	0x1f
+ 595 02cd 01        		.byte	0x1
+ 596 02ce 0000 0000 		.long	.LFB8
+ 597 02d2 0000 0000 		.long	.LFE8
+ 598 02d6 03        		.byte	0x3
+ 599 02d7 92        		.byte	0x92
+ 600 02d8 20        		.uleb128 0x20
+ 601 02d9 02        		.sleb128 2
+ 602 02da 01        		.byte	0x1
+ 603 02db 6003 0000 		.long	0x360
+ 604 02df 0C        		.uleb128 0xc
+ 605 02e0 0000 0000 		.long	.LASF23
+ 606 02e4 01        		.byte	0x1
+ 607 02e5 1F        		.byte	0x1f
+ 608 02e6 6003 0000 		.long	0x360
+ 609 02ea 0000 0000 		.long	.LLST9
+ 610 02ee 0C        		.uleb128 0xc
+ 611 02ef 0000 0000 		.long	.LASF24
+ 612 02f3 01        		.byte	0x1
+ 613 02f4 1F        		.byte	0x1f
+ 614 02f5 4900 0000 		.long	0x49
+ 615 02f9 0000 0000 		.long	.LLST10
+ 616 02fd 11        		.uleb128 0x11
+ 617 02fe F000 0000 		.long	0xf0
+ 618 0302 0000 0000 		.long	.LBB8
+ 619 0306 0000 0000 		.long	.LBE8
+ 620 030a 01        		.byte	0x1
+ 621 030b 22        		.byte	0x22
+ 622 030c 3603 0000 		.long	0x336
+ 623 0310 12        		.uleb128 0x12
+ 624 0311 FD00 0000 		.long	0xfd
+ 625 0315 04        		.byte	0x4
+ 626 0316 0000 A042 		.long	0x42a00000
+ 627 031a 13        		.uleb128 0x13
+ 628 031b 0000 0000 		.long	.LBB9
+ 629 031f 0000 0000 		.long	.LBE9
+ 630 0323 14        		.uleb128 0x14
+ 631 0324 0801 0000 		.long	0x108
+ 632 0328 04        		.byte	0x4
+ 633 0329 0000 A544 		.long	0x44a50000
+ 634 032d 15        		.uleb128 0x15
+ 635 032e 1301 0000 		.long	0x113
+ 636 0332 2805      		.word	0x528
+ 637 0334 00        		.byte	0
+ 638 0335 00        		.byte	0
+ 639 0336 16        		.uleb128 0x16
+ 640 0337 0000 0000 		.long	.LVL17
+ 641 033b 3001 0000 		.long	0x130
+ 642 033f 17        		.uleb128 0x17
+ 643 0340 06        		.byte	0x6
+ 644 0341 68        		.byte	0x68
+ 645 0342 93        		.byte	0x93
+ 646 0343 01        		.uleb128 0x1
+ 647 0344 69        		.byte	0x69
+ 648 0345 93        		.byte	0x93
+ 649 0346 01        		.uleb128 0x1
+ 650 0347 03        		.byte	0x3
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 20
+
+
+ 651 0348 F3        		.byte	0xf3
+ 652 0349 01        		.uleb128 0x1
+ 653 034a 68        		.byte	0x68
+ 654 034b 17        		.uleb128 0x17
+ 655 034c 06        		.byte	0x6
+ 656 034d 66        		.byte	0x66
+ 657 034e 93        		.byte	0x93
+ 658 034f 01        		.uleb128 0x1
+ 659 0350 67        		.byte	0x67
+ 660 0351 93        		.byte	0x93
+ 661 0352 01        		.uleb128 0x1
+ 662 0353 05        		.byte	0x5
+ 663 0354 F3        		.byte	0xf3
+ 664 0355 01        		.uleb128 0x1
+ 665 0356 66        		.byte	0x66
+ 666 0357 32        		.byte	0x32
+ 667 0358 24        		.byte	0x24
+ 668 0359 17        		.uleb128 0x17
+ 669 035a 01        		.byte	0x1
+ 670 035b 64        		.byte	0x64
+ 671 035c 01        		.byte	0x1
+ 672 035d 32        		.byte	0x32
+ 673 035e 00        		.byte	0
+ 674 035f 00        		.byte	0
+ 675 0360 10        		.uleb128 0x10
+ 676 0361 02        		.byte	0x2
+ 677 0362 B300 0000 		.long	0xb3
+ 678 0366 19        		.uleb128 0x19
+ 679 0367 01        		.byte	0x1
+ 680 0368 0000 0000 		.long	.LASF34
+ 681 036c 01        		.byte	0x1
+ 682 036d 25        		.byte	0x25
+ 683 036e 01        		.byte	0x1
+ 684 036f 0000 0000 		.long	.LFB9
+ 685 0373 0000 0000 		.long	.LFE9
+ 686 0377 03        		.byte	0x3
+ 687 0378 92        		.byte	0x92
+ 688 0379 20        		.uleb128 0x20
+ 689 037a 02        		.sleb128 2
+ 690 037b 01        		.byte	0x1
+ 691 037c 0C        		.uleb128 0xc
+ 692 037d 0000 0000 		.long	.LASF15
+ 693 0381 01        		.byte	0x1
+ 694 0382 25        		.byte	0x25
+ 695 0383 AC01 0000 		.long	0x1ac
+ 696 0387 0000 0000 		.long	.LLST11
+ 697 038b 0C        		.uleb128 0xc
+ 698 038c 0000 0000 		.long	.LASF16
+ 699 0390 01        		.byte	0x1
+ 700 0391 25        		.byte	0x25
+ 701 0392 4900 0000 		.long	0x49
+ 702 0396 0000 0000 		.long	.LLST12
+ 703 039a 18        		.uleb128 0x18
+ 704 039b 0000 0000 		.long	.LVL19
+ 705 039f 01        		.byte	0x1
+ 706 03a0 3001 0000 		.long	0x130
+ 707 03a4 17        		.uleb128 0x17
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 21
+
+
+ 708 03a5 06        		.byte	0x6
+ 709 03a6 68        		.byte	0x68
+ 710 03a7 93        		.byte	0x93
+ 711 03a8 01        		.uleb128 0x1
+ 712 03a9 69        		.byte	0x69
+ 713 03aa 93        		.byte	0x93
+ 714 03ab 01        		.uleb128 0x1
+ 715 03ac 03        		.byte	0x3
+ 716 03ad F3        		.byte	0xf3
+ 717 03ae 01        		.uleb128 0x1
+ 718 03af 68        		.byte	0x68
+ 719 03b0 17        		.uleb128 0x17
+ 720 03b1 06        		.byte	0x6
+ 721 03b2 66        		.byte	0x66
+ 722 03b3 93        		.byte	0x93
+ 723 03b4 01        		.uleb128 0x1
+ 724 03b5 67        		.byte	0x67
+ 725 03b6 93        		.byte	0x93
+ 726 03b7 01        		.uleb128 0x1
+ 727 03b8 03        		.byte	0x3
+ 728 03b9 F3        		.byte	0xf3
+ 729 03ba 01        		.uleb128 0x1
+ 730 03bb 66        		.byte	0x66
+ 731 03bc 17        		.uleb128 0x17
+ 732 03bd 01        		.byte	0x1
+ 733 03be 64        		.byte	0x64
+ 734 03bf 01        		.byte	0x1
+ 735 03c0 32        		.byte	0x32
+ 736 03c1 00        		.byte	0
+ 737 03c2 00        		.byte	0
+ 738 03c3 00        		.byte	0
+ 739               		.section	.debug_abbrev,"",@progbits
+ 740               	.Ldebug_abbrev0:
+ 741 0000 01        		.uleb128 0x1
+ 742 0001 11        		.uleb128 0x11
+ 743 0002 01        		.byte	0x1
+ 744 0003 25        		.uleb128 0x25
+ 745 0004 0E        		.uleb128 0xe
+ 746 0005 13        		.uleb128 0x13
+ 747 0006 0B        		.uleb128 0xb
+ 748 0007 03        		.uleb128 0x3
+ 749 0008 0E        		.uleb128 0xe
+ 750 0009 1B        		.uleb128 0x1b
+ 751 000a 0E        		.uleb128 0xe
+ 752 000b 55        		.uleb128 0x55
+ 753 000c 06        		.uleb128 0x6
+ 754 000d 11        		.uleb128 0x11
+ 755 000e 01        		.uleb128 0x1
+ 756 000f 52        		.uleb128 0x52
+ 757 0010 01        		.uleb128 0x1
+ 758 0011 10        		.uleb128 0x10
+ 759 0012 06        		.uleb128 0x6
+ 760 0013 00        		.byte	0
+ 761 0014 00        		.byte	0
+ 762 0015 02        		.uleb128 0x2
+ 763 0016 24        		.uleb128 0x24
+ 764 0017 00        		.byte	0
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 22
+
+
+ 765 0018 0B        		.uleb128 0xb
+ 766 0019 0B        		.uleb128 0xb
+ 767 001a 3E        		.uleb128 0x3e
+ 768 001b 0B        		.uleb128 0xb
+ 769 001c 03        		.uleb128 0x3
+ 770 001d 0E        		.uleb128 0xe
+ 771 001e 00        		.byte	0
+ 772 001f 00        		.byte	0
+ 773 0020 03        		.uleb128 0x3
+ 774 0021 16        		.uleb128 0x16
+ 775 0022 00        		.byte	0
+ 776 0023 03        		.uleb128 0x3
+ 777 0024 0E        		.uleb128 0xe
+ 778 0025 3A        		.uleb128 0x3a
+ 779 0026 0B        		.uleb128 0xb
+ 780 0027 3B        		.uleb128 0x3b
+ 781 0028 0B        		.uleb128 0xb
+ 782 0029 49        		.uleb128 0x49
+ 783 002a 13        		.uleb128 0x13
+ 784 002b 00        		.byte	0
+ 785 002c 00        		.byte	0
+ 786 002d 04        		.uleb128 0x4
+ 787 002e 24        		.uleb128 0x24
+ 788 002f 00        		.byte	0
+ 789 0030 0B        		.uleb128 0xb
+ 790 0031 0B        		.uleb128 0xb
+ 791 0032 3E        		.uleb128 0x3e
+ 792 0033 0B        		.uleb128 0xb
+ 793 0034 03        		.uleb128 0x3
+ 794 0035 08        		.uleb128 0x8
+ 795 0036 00        		.byte	0
+ 796 0037 00        		.byte	0
+ 797 0038 05        		.uleb128 0x5
+ 798 0039 13        		.uleb128 0x13
+ 799 003a 01        		.byte	0x1
+ 800 003b 03        		.uleb128 0x3
+ 801 003c 0E        		.uleb128 0xe
+ 802 003d 0B        		.uleb128 0xb
+ 803 003e 0B        		.uleb128 0xb
+ 804 003f 3A        		.uleb128 0x3a
+ 805 0040 0B        		.uleb128 0xb
+ 806 0041 3B        		.uleb128 0x3b
+ 807 0042 0B        		.uleb128 0xb
+ 808 0043 01        		.uleb128 0x1
+ 809 0044 13        		.uleb128 0x13
+ 810 0045 00        		.byte	0
+ 811 0046 00        		.byte	0
+ 812 0047 06        		.uleb128 0x6
+ 813 0048 0D        		.uleb128 0xd
+ 814 0049 00        		.byte	0
+ 815 004a 03        		.uleb128 0x3
+ 816 004b 08        		.uleb128 0x8
+ 817 004c 3A        		.uleb128 0x3a
+ 818 004d 0B        		.uleb128 0xb
+ 819 004e 3B        		.uleb128 0x3b
+ 820 004f 0B        		.uleb128 0xb
+ 821 0050 49        		.uleb128 0x49
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 23
+
+
+ 822 0051 13        		.uleb128 0x13
+ 823 0052 38        		.uleb128 0x38
+ 824 0053 0A        		.uleb128 0xa
+ 825 0054 00        		.byte	0
+ 826 0055 00        		.byte	0
+ 827 0056 07        		.uleb128 0x7
+ 828 0057 2E        		.uleb128 0x2e
+ 829 0058 01        		.byte	0x1
+ 830 0059 03        		.uleb128 0x3
+ 831 005a 0E        		.uleb128 0xe
+ 832 005b 3A        		.uleb128 0x3a
+ 833 005c 0B        		.uleb128 0xb
+ 834 005d 3B        		.uleb128 0x3b
+ 835 005e 0B        		.uleb128 0xb
+ 836 005f 27        		.uleb128 0x27
+ 837 0060 0C        		.uleb128 0xc
+ 838 0061 20        		.uleb128 0x20
+ 839 0062 0B        		.uleb128 0xb
+ 840 0063 01        		.uleb128 0x1
+ 841 0064 13        		.uleb128 0x13
+ 842 0065 00        		.byte	0
+ 843 0066 00        		.byte	0
+ 844 0067 08        		.uleb128 0x8
+ 845 0068 05        		.uleb128 0x5
+ 846 0069 00        		.byte	0
+ 847 006a 03        		.uleb128 0x3
+ 848 006b 0E        		.uleb128 0xe
+ 849 006c 3A        		.uleb128 0x3a
+ 850 006d 0B        		.uleb128 0xb
+ 851 006e 3B        		.uleb128 0x3b
+ 852 006f 0B        		.uleb128 0xb
+ 853 0070 49        		.uleb128 0x49
+ 854 0071 13        		.uleb128 0x13
+ 855 0072 00        		.byte	0
+ 856 0073 00        		.byte	0
+ 857 0074 09        		.uleb128 0x9
+ 858 0075 34        		.uleb128 0x34
+ 859 0076 00        		.byte	0
+ 860 0077 03        		.uleb128 0x3
+ 861 0078 0E        		.uleb128 0xe
+ 862 0079 3A        		.uleb128 0x3a
+ 863 007a 0B        		.uleb128 0xb
+ 864 007b 3B        		.uleb128 0x3b
+ 865 007c 0B        		.uleb128 0xb
+ 866 007d 49        		.uleb128 0x49
+ 867 007e 13        		.uleb128 0x13
+ 868 007f 00        		.byte	0
+ 869 0080 00        		.byte	0
+ 870 0081 0A        		.uleb128 0xa
+ 871 0082 2E        		.uleb128 0x2e
+ 872 0083 00        		.byte	0
+ 873 0084 3F        		.uleb128 0x3f
+ 874 0085 0C        		.uleb128 0xc
+ 875 0086 03        		.uleb128 0x3
+ 876 0087 0E        		.uleb128 0xe
+ 877 0088 3A        		.uleb128 0x3a
+ 878 0089 0B        		.uleb128 0xb
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 24
+
+
+ 879 008a 3B        		.uleb128 0x3b
+ 880 008b 0B        		.uleb128 0xb
+ 881 008c 27        		.uleb128 0x27
+ 882 008d 0C        		.uleb128 0xc
+ 883 008e 20        		.uleb128 0x20
+ 884 008f 0B        		.uleb128 0xb
+ 885 0090 00        		.byte	0
+ 886 0091 00        		.byte	0
+ 887 0092 0B        		.uleb128 0xb
+ 888 0093 2E        		.uleb128 0x2e
+ 889 0094 01        		.byte	0x1
+ 890 0095 3F        		.uleb128 0x3f
+ 891 0096 0C        		.uleb128 0xc
+ 892 0097 03        		.uleb128 0x3
+ 893 0098 0E        		.uleb128 0xe
+ 894 0099 3A        		.uleb128 0x3a
+ 895 009a 0B        		.uleb128 0xb
+ 896 009b 3B        		.uleb128 0x3b
+ 897 009c 0B        		.uleb128 0xb
+ 898 009d 27        		.uleb128 0x27
+ 899 009e 0C        		.uleb128 0xc
+ 900 009f 11        		.uleb128 0x11
+ 901 00a0 01        		.uleb128 0x1
+ 902 00a1 12        		.uleb128 0x12
+ 903 00a2 01        		.uleb128 0x1
+ 904 00a3 40        		.uleb128 0x40
+ 905 00a4 0A        		.uleb128 0xa
+ 906 00a5 9742      		.uleb128 0x2117
+ 907 00a7 0C        		.uleb128 0xc
+ 908 00a8 01        		.uleb128 0x1
+ 909 00a9 13        		.uleb128 0x13
+ 910 00aa 00        		.byte	0
+ 911 00ab 00        		.byte	0
+ 912 00ac 0C        		.uleb128 0xc
+ 913 00ad 05        		.uleb128 0x5
+ 914 00ae 00        		.byte	0
+ 915 00af 03        		.uleb128 0x3
+ 916 00b0 0E        		.uleb128 0xe
+ 917 00b1 3A        		.uleb128 0x3a
+ 918 00b2 0B        		.uleb128 0xb
+ 919 00b3 3B        		.uleb128 0x3b
+ 920 00b4 0B        		.uleb128 0xb
+ 921 00b5 49        		.uleb128 0x49
+ 922 00b6 13        		.uleb128 0x13
+ 923 00b7 02        		.uleb128 0x2
+ 924 00b8 06        		.uleb128 0x6
+ 925 00b9 00        		.byte	0
+ 926 00ba 00        		.byte	0
+ 927 00bb 0D        		.uleb128 0xd
+ 928 00bc 34        		.uleb128 0x34
+ 929 00bd 00        		.byte	0
+ 930 00be 03        		.uleb128 0x3
+ 931 00bf 0E        		.uleb128 0xe
+ 932 00c0 3A        		.uleb128 0x3a
+ 933 00c1 0B        		.uleb128 0xb
+ 934 00c2 3B        		.uleb128 0x3b
+ 935 00c3 0B        		.uleb128 0xb
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 25
+
+
+ 936 00c4 49        		.uleb128 0x49
+ 937 00c5 13        		.uleb128 0x13
+ 938 00c6 02        		.uleb128 0x2
+ 939 00c7 06        		.uleb128 0x6
+ 940 00c8 00        		.byte	0
+ 941 00c9 00        		.byte	0
+ 942 00ca 0E        		.uleb128 0xe
+ 943 00cb 34        		.uleb128 0x34
+ 944 00cc 00        		.byte	0
+ 945 00cd 03        		.uleb128 0x3
+ 946 00ce 08        		.uleb128 0x8
+ 947 00cf 3A        		.uleb128 0x3a
+ 948 00d0 0B        		.uleb128 0xb
+ 949 00d1 3B        		.uleb128 0x3b
+ 950 00d2 0B        		.uleb128 0xb
+ 951 00d3 49        		.uleb128 0x49
+ 952 00d4 13        		.uleb128 0x13
+ 953 00d5 00        		.byte	0
+ 954 00d6 00        		.byte	0
+ 955 00d7 0F        		.uleb128 0xf
+ 956 00d8 34        		.uleb128 0x34
+ 957 00d9 00        		.byte	0
+ 958 00da 03        		.uleb128 0x3
+ 959 00db 0E        		.uleb128 0xe
+ 960 00dc 3A        		.uleb128 0x3a
+ 961 00dd 0B        		.uleb128 0xb
+ 962 00de 3B        		.uleb128 0x3b
+ 963 00df 0B        		.uleb128 0xb
+ 964 00e0 49        		.uleb128 0x49
+ 965 00e1 13        		.uleb128 0x13
+ 966 00e2 02        		.uleb128 0x2
+ 967 00e3 0A        		.uleb128 0xa
+ 968 00e4 00        		.byte	0
+ 969 00e5 00        		.byte	0
+ 970 00e6 10        		.uleb128 0x10
+ 971 00e7 0F        		.uleb128 0xf
+ 972 00e8 00        		.byte	0
+ 973 00e9 0B        		.uleb128 0xb
+ 974 00ea 0B        		.uleb128 0xb
+ 975 00eb 49        		.uleb128 0x49
+ 976 00ec 13        		.uleb128 0x13
+ 977 00ed 00        		.byte	0
+ 978 00ee 00        		.byte	0
+ 979 00ef 11        		.uleb128 0x11
+ 980 00f0 1D        		.uleb128 0x1d
+ 981 00f1 01        		.byte	0x1
+ 982 00f2 31        		.uleb128 0x31
+ 983 00f3 13        		.uleb128 0x13
+ 984 00f4 11        		.uleb128 0x11
+ 985 00f5 01        		.uleb128 0x1
+ 986 00f6 12        		.uleb128 0x12
+ 987 00f7 01        		.uleb128 0x1
+ 988 00f8 58        		.uleb128 0x58
+ 989 00f9 0B        		.uleb128 0xb
+ 990 00fa 59        		.uleb128 0x59
+ 991 00fb 0B        		.uleb128 0xb
+ 992 00fc 01        		.uleb128 0x1
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 26
+
+
+ 993 00fd 13        		.uleb128 0x13
+ 994 00fe 00        		.byte	0
+ 995 00ff 00        		.byte	0
+ 996 0100 12        		.uleb128 0x12
+ 997 0101 05        		.uleb128 0x5
+ 998 0102 00        		.byte	0
+ 999 0103 31        		.uleb128 0x31
+ 1000 0104 13        		.uleb128 0x13
+ 1001 0105 1C        		.uleb128 0x1c
+ 1002 0106 0A        		.uleb128 0xa
+ 1003 0107 00        		.byte	0
+ 1004 0108 00        		.byte	0
+ 1005 0109 13        		.uleb128 0x13
+ 1006 010a 0B        		.uleb128 0xb
+ 1007 010b 01        		.byte	0x1
+ 1008 010c 11        		.uleb128 0x11
+ 1009 010d 01        		.uleb128 0x1
+ 1010 010e 12        		.uleb128 0x12
+ 1011 010f 01        		.uleb128 0x1
+ 1012 0110 00        		.byte	0
+ 1013 0111 00        		.byte	0
+ 1014 0112 14        		.uleb128 0x14
+ 1015 0113 34        		.uleb128 0x34
+ 1016 0114 00        		.byte	0
+ 1017 0115 31        		.uleb128 0x31
+ 1018 0116 13        		.uleb128 0x13
+ 1019 0117 1C        		.uleb128 0x1c
+ 1020 0118 0A        		.uleb128 0xa
+ 1021 0119 00        		.byte	0
+ 1022 011a 00        		.byte	0
+ 1023 011b 15        		.uleb128 0x15
+ 1024 011c 34        		.uleb128 0x34
+ 1025 011d 00        		.byte	0
+ 1026 011e 31        		.uleb128 0x31
+ 1027 011f 13        		.uleb128 0x13
+ 1028 0120 1C        		.uleb128 0x1c
+ 1029 0121 05        		.uleb128 0x5
+ 1030 0122 00        		.byte	0
+ 1031 0123 00        		.byte	0
+ 1032 0124 16        		.uleb128 0x16
+ 1033 0125 8982 01   		.uleb128 0x4109
+ 1034 0128 01        		.byte	0x1
+ 1035 0129 11        		.uleb128 0x11
+ 1036 012a 01        		.uleb128 0x1
+ 1037 012b 31        		.uleb128 0x31
+ 1038 012c 13        		.uleb128 0x13
+ 1039 012d 00        		.byte	0
+ 1040 012e 00        		.byte	0
+ 1041 012f 17        		.uleb128 0x17
+ 1042 0130 8A82 01   		.uleb128 0x410a
+ 1043 0133 00        		.byte	0
+ 1044 0134 02        		.uleb128 0x2
+ 1045 0135 0A        		.uleb128 0xa
+ 1046 0136 9142      		.uleb128 0x2111
+ 1047 0138 0A        		.uleb128 0xa
+ 1048 0139 00        		.byte	0
+ 1049 013a 00        		.byte	0
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 27
+
+
+ 1050 013b 18        		.uleb128 0x18
+ 1051 013c 8982 01   		.uleb128 0x4109
+ 1052 013f 01        		.byte	0x1
+ 1053 0140 11        		.uleb128 0x11
+ 1054 0141 01        		.uleb128 0x1
+ 1055 0142 9542      		.uleb128 0x2115
+ 1056 0144 0C        		.uleb128 0xc
+ 1057 0145 31        		.uleb128 0x31
+ 1058 0146 13        		.uleb128 0x13
+ 1059 0147 00        		.byte	0
+ 1060 0148 00        		.byte	0
+ 1061 0149 19        		.uleb128 0x19
+ 1062 014a 2E        		.uleb128 0x2e
+ 1063 014b 01        		.byte	0x1
+ 1064 014c 3F        		.uleb128 0x3f
+ 1065 014d 0C        		.uleb128 0xc
+ 1066 014e 03        		.uleb128 0x3
+ 1067 014f 0E        		.uleb128 0xe
+ 1068 0150 3A        		.uleb128 0x3a
+ 1069 0151 0B        		.uleb128 0xb
+ 1070 0152 3B        		.uleb128 0x3b
+ 1071 0153 0B        		.uleb128 0xb
+ 1072 0154 27        		.uleb128 0x27
+ 1073 0155 0C        		.uleb128 0xc
+ 1074 0156 11        		.uleb128 0x11
+ 1075 0157 01        		.uleb128 0x1
+ 1076 0158 12        		.uleb128 0x12
+ 1077 0159 01        		.uleb128 0x1
+ 1078 015a 40        		.uleb128 0x40
+ 1079 015b 0A        		.uleb128 0xa
+ 1080 015c 9742      		.uleb128 0x2117
+ 1081 015e 0C        		.uleb128 0xc
+ 1082 015f 00        		.byte	0
+ 1083 0160 00        		.byte	0
+ 1084 0161 00        		.byte	0
+ 1085               		.section	.debug_loc,"",@progbits
+ 1086               	.Ldebug_loc0:
+ 1087               	.LLST0:
+ 1088 0000 0000 0000 		.long	.LVL0
+ 1089 0004 0000 0000 		.long	.LVL5
+ 1090 0008 0600      		.word	0x6
+ 1091 000a 68        		.byte	0x68
+ 1092 000b 93        		.byte	0x93
+ 1093 000c 01        		.uleb128 0x1
+ 1094 000d 69        		.byte	0x69
+ 1095 000e 93        		.byte	0x93
+ 1096 000f 01        		.uleb128 0x1
+ 1097 0010 0000 0000 		.long	.LVL5
+ 1098 0014 0000 0000 		.long	.LVL6
+ 1099 0018 0600      		.word	0x6
+ 1100 001a 6E        		.byte	0x6e
+ 1101 001b 93        		.byte	0x93
+ 1102 001c 01        		.uleb128 0x1
+ 1103 001d 6F        		.byte	0x6f
+ 1104 001e 93        		.byte	0x93
+ 1105 001f 01        		.uleb128 0x1
+ 1106 0020 0000 0000 		.long	.LVL6
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 28
+
+
+ 1107 0024 0000 0000 		.long	.LVL7
+ 1108 0028 0300      		.word	0x3
+ 1109 002a 8E        		.byte	0x8e
+ 1110 002b 01        		.sleb128 1
+ 1111 002c 9F        		.byte	0x9f
+ 1112 002d 0000 0000 		.long	.LVL7
+ 1113 0031 0000 0000 		.long	.LFE10
+ 1114 0035 0600      		.word	0x6
+ 1115 0037 6E        		.byte	0x6e
+ 1116 0038 93        		.byte	0x93
+ 1117 0039 01        		.uleb128 0x1
+ 1118 003a 6F        		.byte	0x6f
+ 1119 003b 93        		.byte	0x93
+ 1120 003c 01        		.uleb128 0x1
+ 1121 003d 0000 0000 		.long	0
+ 1122 0041 0000 0000 		.long	0
+ 1123               	.LLST1:
+ 1124 0045 0000 0000 		.long	.LVL0
+ 1125 0049 0000 0000 		.long	.LVL5
+ 1126 004d 0600      		.word	0x6
+ 1127 004f 66        		.byte	0x66
+ 1128 0050 93        		.byte	0x93
+ 1129 0051 01        		.uleb128 0x1
+ 1130 0052 67        		.byte	0x67
+ 1131 0053 93        		.byte	0x93
+ 1132 0054 01        		.uleb128 0x1
+ 1133 0055 0000 0000 		.long	.LVL5
+ 1134 0059 0000 0000 		.long	.LVL7
+ 1135 005d 0C00      		.word	0xc
+ 1136 005f 8E        		.byte	0x8e
+ 1137 0060 00        		.sleb128 0
+ 1138 0061 20        		.byte	0x20
+ 1139 0062 F3        		.byte	0xf3
+ 1140 0063 01        		.uleb128 0x1
+ 1141 0064 66        		.byte	0x66
+ 1142 0065 22        		.byte	0x22
+ 1143 0066 F3        		.byte	0xf3
+ 1144 0067 01        		.uleb128 0x1
+ 1145 0068 68        		.byte	0x68
+ 1146 0069 22        		.byte	0x22
+ 1147 006a 9F        		.byte	0x9f
+ 1148 006b 0000 0000 		.long	.LVL7
+ 1149 006f 0000 0000 		.long	.LVL9
+ 1150 0073 0B00      		.word	0xb
+ 1151 0075 F3        		.byte	0xf3
+ 1152 0076 01        		.uleb128 0x1
+ 1153 0077 68        		.byte	0x68
+ 1154 0078 8E        		.byte	0x8e
+ 1155 0079 00        		.sleb128 0
+ 1156 007a 1C        		.byte	0x1c
+ 1157 007b F3        		.byte	0xf3
+ 1158 007c 01        		.uleb128 0x1
+ 1159 007d 66        		.byte	0x66
+ 1160 007e 22        		.byte	0x22
+ 1161 007f 9F        		.byte	0x9f
+ 1162 0080 0000 0000 		.long	.LVL9
+ 1163 0084 0000 0000 		.long	.LFE10
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 29
+
+
+ 1164 0088 0C00      		.word	0xc
+ 1165 008a 8E        		.byte	0x8e
+ 1166 008b 00        		.sleb128 0
+ 1167 008c 20        		.byte	0x20
+ 1168 008d F3        		.byte	0xf3
+ 1169 008e 01        		.uleb128 0x1
+ 1170 008f 66        		.byte	0x66
+ 1171 0090 22        		.byte	0x22
+ 1172 0091 F3        		.byte	0xf3
+ 1173 0092 01        		.uleb128 0x1
+ 1174 0093 68        		.byte	0x68
+ 1175 0094 22        		.byte	0x22
+ 1176 0095 9F        		.byte	0x9f
+ 1177 0096 0000 0000 		.long	0
+ 1178 009a 0000 0000 		.long	0
+ 1179               	.LLST2:
+ 1180 009e 0000 0000 		.long	.LVL0
+ 1181 00a2 0000 0000 		.long	.LVL2
+ 1182 00a6 0100      		.word	0x1
+ 1183 00a8 64        		.byte	0x64
+ 1184 00a9 0000 0000 		.long	.LVL3
+ 1185 00ad 0000 0000 		.long	.LFE10
+ 1186 00b1 0100      		.word	0x1
+ 1187 00b3 63        		.byte	0x63
+ 1188 00b4 0000 0000 		.long	0
+ 1189 00b8 0000 0000 		.long	0
+ 1190               	.LLST3:
+ 1191 00bc 0000 0000 		.long	.LVL7
+ 1192 00c0 0000 0000 		.long	.LVL9
+ 1193 00c4 0100      		.word	0x1
+ 1194 00c6 68        		.byte	0x68
+ 1195 00c7 0000 0000 		.long	0
+ 1196 00cb 0000 0000 		.long	0
+ 1197               	.LLST4:
+ 1198 00cf 0000 0000 		.long	.LVL10
+ 1199 00d3 0000 0000 		.long	.LVL12-1
+ 1200 00d7 0600      		.word	0x6
+ 1201 00d9 68        		.byte	0x68
+ 1202 00da 93        		.byte	0x93
+ 1203 00db 01        		.uleb128 0x1
+ 1204 00dc 69        		.byte	0x69
+ 1205 00dd 93        		.byte	0x93
+ 1206 00de 01        		.uleb128 0x1
+ 1207 00df 0000 0000 		.long	.LVL12-1
+ 1208 00e3 0000 0000 		.long	.LFE7
+ 1209 00e7 0400      		.word	0x4
+ 1210 00e9 F3        		.byte	0xf3
+ 1211 00ea 01        		.uleb128 0x1
+ 1212 00eb 68        		.byte	0x68
+ 1213 00ec 9F        		.byte	0x9f
+ 1214 00ed 0000 0000 		.long	0
+ 1215 00f1 0000 0000 		.long	0
+ 1216               	.LLST5:
+ 1217 00f5 0000 0000 		.long	.LVL10
+ 1218 00f9 0000 0000 		.long	.LVL11
+ 1219 00fd 0600      		.word	0x6
+ 1220 00ff 66        		.byte	0x66
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 30
+
+
+ 1221 0100 93        		.byte	0x93
+ 1222 0101 01        		.uleb128 0x1
+ 1223 0102 67        		.byte	0x67
+ 1224 0103 93        		.byte	0x93
+ 1225 0104 01        		.uleb128 0x1
+ 1226 0105 0000 0000 		.long	.LVL11
+ 1227 0109 0000 0000 		.long	.LFE7
+ 1228 010d 0400      		.word	0x4
+ 1229 010f F3        		.byte	0xf3
+ 1230 0110 01        		.uleb128 0x1
+ 1231 0111 66        		.byte	0x66
+ 1232 0112 9F        		.byte	0x9f
+ 1233 0113 0000 0000 		.long	0
+ 1234 0117 0000 0000 		.long	0
+ 1235               	.LLST6:
+ 1236 011b 0000 0000 		.long	.LVL10
+ 1237 011f 0000 0000 		.long	.LVL12-1
+ 1238 0123 0100      		.word	0x1
+ 1239 0125 64        		.byte	0x64
+ 1240 0126 0000 0000 		.long	.LVL12-1
+ 1241 012a 0000 0000 		.long	.LFE7
+ 1242 012e 0400      		.word	0x4
+ 1243 0130 F3        		.byte	0xf3
+ 1244 0131 01        		.uleb128 0x1
+ 1245 0132 64        		.byte	0x64
+ 1246 0133 9F        		.byte	0x9f
+ 1247 0134 0000 0000 		.long	0
+ 1248 0138 0000 0000 		.long	0
+ 1249               	.LLST7:
+ 1250 013c 0000 0000 		.long	.LVL13
+ 1251 0140 0000 0000 		.long	.LVL14-1
+ 1252 0144 0600      		.word	0x6
+ 1253 0146 68        		.byte	0x68
+ 1254 0147 93        		.byte	0x93
+ 1255 0148 01        		.uleb128 0x1
+ 1256 0149 69        		.byte	0x69
+ 1257 014a 93        		.byte	0x93
+ 1258 014b 01        		.uleb128 0x1
+ 1259 014c 0000 0000 		.long	.LVL14-1
+ 1260 0150 0000 0000 		.long	.LFE6
+ 1261 0154 0400      		.word	0x4
+ 1262 0156 F3        		.byte	0xf3
+ 1263 0157 01        		.uleb128 0x1
+ 1264 0158 68        		.byte	0x68
+ 1265 0159 9F        		.byte	0x9f
+ 1266 015a 0000 0000 		.long	0
+ 1267 015e 0000 0000 		.long	0
+ 1268               	.LLST8:
+ 1269 0162 0000 0000 		.long	.LVL13
+ 1270 0166 0000 0000 		.long	.LVL14-1
+ 1271 016a 0600      		.word	0x6
+ 1272 016c 66        		.byte	0x66
+ 1273 016d 93        		.byte	0x93
+ 1274 016e 01        		.uleb128 0x1
+ 1275 016f 67        		.byte	0x67
+ 1276 0170 93        		.byte	0x93
+ 1277 0171 01        		.uleb128 0x1
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 31
+
+
+ 1278 0172 0000 0000 		.long	.LVL14-1
+ 1279 0176 0000 0000 		.long	.LFE6
+ 1280 017a 0400      		.word	0x4
+ 1281 017c F3        		.byte	0xf3
+ 1282 017d 01        		.uleb128 0x1
+ 1283 017e 66        		.byte	0x66
+ 1284 017f 9F        		.byte	0x9f
+ 1285 0180 0000 0000 		.long	0
+ 1286 0184 0000 0000 		.long	0
+ 1287               	.LLST9:
+ 1288 0188 0000 0000 		.long	.LVL15
+ 1289 018c 0000 0000 		.long	.LVL17-1
+ 1290 0190 0600      		.word	0x6
+ 1291 0192 68        		.byte	0x68
+ 1292 0193 93        		.byte	0x93
+ 1293 0194 01        		.uleb128 0x1
+ 1294 0195 69        		.byte	0x69
+ 1295 0196 93        		.byte	0x93
+ 1296 0197 01        		.uleb128 0x1
+ 1297 0198 0000 0000 		.long	.LVL17-1
+ 1298 019c 0000 0000 		.long	.LFE8
+ 1299 01a0 0400      		.word	0x4
+ 1300 01a2 F3        		.byte	0xf3
+ 1301 01a3 01        		.uleb128 0x1
+ 1302 01a4 68        		.byte	0x68
+ 1303 01a5 9F        		.byte	0x9f
+ 1304 01a6 0000 0000 		.long	0
+ 1305 01aa 0000 0000 		.long	0
+ 1306               	.LLST10:
+ 1307 01ae 0000 0000 		.long	.LVL15
+ 1308 01b2 0000 0000 		.long	.LVL16
+ 1309 01b6 0600      		.word	0x6
+ 1310 01b8 66        		.byte	0x66
+ 1311 01b9 93        		.byte	0x93
+ 1312 01ba 01        		.uleb128 0x1
+ 1313 01bb 67        		.byte	0x67
+ 1314 01bc 93        		.byte	0x93
+ 1315 01bd 01        		.uleb128 0x1
+ 1316 01be 0000 0000 		.long	.LVL16
+ 1317 01c2 0000 0000 		.long	.LFE8
+ 1318 01c6 0400      		.word	0x4
+ 1319 01c8 F3        		.byte	0xf3
+ 1320 01c9 01        		.uleb128 0x1
+ 1321 01ca 66        		.byte	0x66
+ 1322 01cb 9F        		.byte	0x9f
+ 1323 01cc 0000 0000 		.long	0
+ 1324 01d0 0000 0000 		.long	0
+ 1325               	.LLST11:
+ 1326 01d4 0000 0000 		.long	.LVL18
+ 1327 01d8 0000 0000 		.long	.LVL19-1
+ 1328 01dc 0600      		.word	0x6
+ 1329 01de 68        		.byte	0x68
+ 1330 01df 93        		.byte	0x93
+ 1331 01e0 01        		.uleb128 0x1
+ 1332 01e1 69        		.byte	0x69
+ 1333 01e2 93        		.byte	0x93
+ 1334 01e3 01        		.uleb128 0x1
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 32
+
+
+ 1335 01e4 0000 0000 		.long	.LVL19-1
+ 1336 01e8 0000 0000 		.long	.LFE9
+ 1337 01ec 0400      		.word	0x4
+ 1338 01ee F3        		.byte	0xf3
+ 1339 01ef 01        		.uleb128 0x1
+ 1340 01f0 68        		.byte	0x68
+ 1341 01f1 9F        		.byte	0x9f
+ 1342 01f2 0000 0000 		.long	0
+ 1343 01f6 0000 0000 		.long	0
+ 1344               	.LLST12:
+ 1345 01fa 0000 0000 		.long	.LVL18
+ 1346 01fe 0000 0000 		.long	.LVL19-1
+ 1347 0202 0600      		.word	0x6
+ 1348 0204 66        		.byte	0x66
+ 1349 0205 93        		.byte	0x93
+ 1350 0206 01        		.uleb128 0x1
+ 1351 0207 67        		.byte	0x67
+ 1352 0208 93        		.byte	0x93
+ 1353 0209 01        		.uleb128 0x1
+ 1354 020a 0000 0000 		.long	.LVL19-1
+ 1355 020e 0000 0000 		.long	.LFE9
+ 1356 0212 0400      		.word	0x4
+ 1357 0214 F3        		.byte	0xf3
+ 1358 0215 01        		.uleb128 0x1
+ 1359 0216 66        		.byte	0x66
+ 1360 0217 9F        		.byte	0x9f
+ 1361 0218 0000 0000 		.long	0
+ 1362 021c 0000 0000 		.long	0
+ 1363               		.section	.debug_aranges,"",@progbits
+ 1364 0000 3C00 0000 		.long	0x3c
+ 1365 0004 0200      		.word	0x2
+ 1366 0006 0000 0000 		.long	.Ldebug_info0
+ 1367 000a 04        		.byte	0x4
+ 1368 000b 00        		.byte	0
+ 1369 000c 0000      		.word	0
+ 1370 000e 0000      		.word	0
+ 1371 0010 0000 0000 		.long	.LFB10
+ 1372 0014 4800 0000 		.long	.LFE10-.LFB10
+ 1373 0018 0000 0000 		.long	.LFB7
+ 1374 001c 1800 0000 		.long	.LFE7-.LFB7
+ 1375 0020 0000 0000 		.long	.LFB6
+ 1376 0024 0400 0000 		.long	.LFE6-.LFB6
+ 1377 0028 0000 0000 		.long	.LFB8
+ 1378 002c 1A00 0000 		.long	.LFE8-.LFB8
+ 1379 0030 0000 0000 		.long	.LFB9
+ 1380 0034 0400 0000 		.long	.LFE9-.LFB9
+ 1381 0038 0000 0000 		.long	0
+ 1382 003c 0000 0000 		.long	0
+ 1383               		.section	.debug_ranges,"",@progbits
+ 1384               	.Ldebug_ranges0:
+ 1385 0000 0000 0000 		.long	.LFB10
+ 1386 0004 0000 0000 		.long	.LFE10
+ 1387 0008 0000 0000 		.long	.LFB7
+ 1388 000c 0000 0000 		.long	.LFE7
+ 1389 0010 0000 0000 		.long	.LFB6
+ 1390 0014 0000 0000 		.long	.LFE6
+ 1391 0018 0000 0000 		.long	.LFB8
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 33
+
+
+ 1392 001c 0000 0000 		.long	.LFE8
+ 1393 0020 0000 0000 		.long	.LFB9
+ 1394 0024 0000 0000 		.long	.LFE9
+ 1395 0028 0000 0000 		.long	0
+ 1396 002c 0000 0000 		.long	0
+ 1397               		.section	.debug_line,"",@progbits
+ 1398               	.Ldebug_line0:
+ 1399 0000 1D01 0000 		.section	.debug_str,"MS",@progbits,1
+ 1399      0200 AC00 
+ 1399      0000 0201 
+ 1399      FB0E 0A00 
+ 1399      0101 0101 
+ 1400               	.LASF24:
+ 1401 0000 6C65 6473 		.string	"leds"
+ 1401      00
+ 1402               	.LASF17:
+ 1403 0005 6D61 736B 		.string	"maskhi"
+ 1403      6869 00
+ 1404               	.LASF23:
+ 1405 000c 6C65 6461 		.string	"ledarray"
+ 1405      7272 6179 
+ 1405      00
+ 1406               	.LASF32:
+ 1407 0015 5F5F 7573 		.string	"__us"
+ 1407      00
+ 1408               	.LASF18:
+ 1409 001a 6375 7262 		.string	"curbyte"
+ 1409      7974 6500 
+ 1410               	.LASF33:
+ 1411 0022 5F5F 6275 		.string	"__builtin_avr_delay_cycles"
+ 1411      696C 7469 
+ 1411      6E5F 6176 
+ 1411      725F 6465 
+ 1411      6C61 795F 
+ 1412               	.LASF26:
+ 1413 003d 7773 3238 		.string	"ws2812_setleds"
+ 1413      3132 5F73 
+ 1413      6574 6C65 
+ 1413      6473 00
+ 1414               	.LASF15:
+ 1415 004c 6461 7461 		.string	"data"
+ 1415      00
+ 1416               	.LASF34:
+ 1417 0051 7773 3238 		.string	"ws2812_sendarray"
+ 1417      3132 5F73 
+ 1417      656E 6461 
+ 1417      7272 6179 
+ 1417      00
+ 1418               	.LASF1:
+ 1419 0062 756E 7369 		.string	"unsigned char"
+ 1419      676E 6564 
+ 1419      2063 6861 
+ 1419      7200 
+ 1420               	.LASF25:
+ 1421 0070 7069 6E6D 		.string	"pinmask"
+ 1421      6173 6B00 
+ 1422               	.LASF7:
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 34
+
+
+ 1423 0078 6C6F 6E67 		.string	"long unsigned int"
+ 1423      2075 6E73 
+ 1423      6967 6E65 
+ 1423      6420 696E 
+ 1423      7400 
+ 1424               	.LASF29:
+ 1425 008a 6C69 6768 		.string	"light_ws2812.c"
+ 1425      745F 7773 
+ 1425      3238 3132 
+ 1425      2E63 00
+ 1426               	.LASF11:
+ 1427 0099 6352 4742 		.string	"cRGBW"
+ 1427      5700 
+ 1428               	.LASF14:
+ 1429 009f 646F 7562 		.string	"double"
+ 1429      6C65 00
+ 1430               	.LASF28:
+ 1431 00a6 474E 5520 		.string	"GNU C 4.8.1 -mmcu=attiny85 -g2 -Os -ffunction-sections -fdata-sections -fpack-struct -fno
+ 1431      4320 342E 
+ 1431      382E 3120 
+ 1431      2D6D 6D63 
+ 1431      753D 6174 
+ 1432               	.LASF12:
+ 1433 0146 5F5F 746D 		.string	"__tmp"
+ 1433      7000 
+ 1434               	.LASF22:
+ 1435 014c 7773 3238 		.string	"ws2812_setleds_pin"
+ 1435      3132 5F73 
+ 1435      6574 6C65 
+ 1435      6473 5F70 
+ 1435      696E 00
+ 1436               	.LASF27:
+ 1437 015f 7773 3238 		.string	"ws2812_setleds_rgbw"
+ 1437      3132 5F73 
+ 1437      6574 6C65 
+ 1437      6473 5F72 
+ 1437      6762 7700 
+ 1438               	.LASF4:
+ 1439 0173 756E 7369 		.string	"unsigned int"
+ 1439      676E 6564 
+ 1439      2069 6E74 
+ 1439      00
+ 1440               	.LASF31:
+ 1441 0180 5F64 656C 		.string	"_delay_us"
+ 1441      6179 5F75 
+ 1441      7300 
+ 1442               	.LASF9:
+ 1443 018a 6C6F 6E67 		.string	"long long unsigned int"
+ 1443      206C 6F6E 
+ 1443      6720 756E 
+ 1443      7369 676E 
+ 1443      6564 2069 
+ 1444               	.LASF2:
+ 1445 01a1 7569 6E74 		.string	"uint8_t"
+ 1445      385F 7400 
+ 1446               	.LASF19:
+ 1447 01a9 6D61 736B 		.string	"masklo"
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 35
+
+
+ 1447      6C6F 00
+ 1448               	.LASF16:
+ 1449 01b0 6461 746C 		.string	"datlen"
+ 1449      656E 00
+ 1450               	.LASF8:
+ 1451 01b7 6C6F 6E67 		.string	"long long int"
+ 1451      206C 6F6E 
+ 1451      6720 696E 
+ 1451      7400 
+ 1452               	.LASF20:
+ 1453 01c5 7372 6567 		.string	"sreg_prev"
+ 1453      5F70 7265 
+ 1453      7600 
+ 1454               	.LASF13:
+ 1455 01cf 5F5F 7469 		.string	"__ticks_dc"
+ 1455      636B 735F 
+ 1455      6463 00
+ 1456               	.LASF30:
+ 1457 01da 2F55 7365 		.string	"/Users/thomasziob/Documents/Ares/ARES_Bootloader/firmware"
+ 1457      7273 2F74 
+ 1457      686F 6D61 
+ 1457      737A 696F 
+ 1457      622F 446F 
+ 1458               	.LASF3:
+ 1459 0214 7569 6E74 		.string	"uint16_t"
+ 1459      3136 5F74 
+ 1459      00
+ 1460               	.LASF21:
+ 1461 021d 7773 3238 		.string	"ws2812_sendarray_mask"
+ 1461      3132 5F73 
+ 1461      656E 6461 
+ 1461      7272 6179 
+ 1461      5F6D 6173 
+ 1462               	.LASF6:
+ 1463 0233 7569 6E74 		.string	"uint32_t"
+ 1463      3332 5F74 
+ 1463      00
+ 1464               	.LASF5:
+ 1465 023c 6C6F 6E67 		.string	"long int"
+ 1465      2069 6E74 
+ 1465      00
+ 1466               	.LASF10:
+ 1467 0245 6352 4742 		.string	"cRGB"
+ 1467      00
+ 1468               	.LASF0:
+ 1469 024a 7369 676E 		.string	"signed char"
+ 1469      6564 2063 
+ 1469      6861 7200 
+ 1470               		.ident	"GCC: (GNU) 4.8.1"
+GAS LISTING /var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s 			page 36
+
+
+DEFINED SYMBOLS
+                            *ABS*:00000000 light_ws2812.c
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:2      *ABS*:0000003e __SP_H__
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:3      *ABS*:0000003d __SP_L__
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:4      *ABS*:0000003f __SREG__
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:5      *ABS*:00000000 __tmp_reg__
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:6      *ABS*:00000001 __zero_reg__
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:13     .text.ws2812_sendarray_mask:00000000 ws2812_sendarray_mask
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:64     .text.ws2812_sendarray_mask:00000026 loop42
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:95     .text.ws2812_setleds_pin:00000000 ws2812_setleds_pin
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:131    .text.ws2812_setleds:00000000 ws2812_setleds
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:150    .text.ws2812_setleds_rgbw:00000000 ws2812_setleds_rgbw
+/var/folders/ms/5q7vlvv55vq22p1rb1y9kb140000gn/T//ccIeU8XZ.s:186    .text.ws2812_sendarray:00000000 ws2812_sendarray
+
+NO UNDEFINED SYMBOLS

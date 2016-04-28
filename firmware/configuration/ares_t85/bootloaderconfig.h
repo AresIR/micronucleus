@@ -206,7 +206,7 @@
  *
  */ 
 
-#define LED_MODE    ACTIVE_HIGH
+#define LED_MODE    NONE
 
 #define LED_DDR     DDRB
 #define LED_PORT    PORTB

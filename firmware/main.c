@@ -19,9 +19,62 @@
 #include <avr/wdt.h>
 #include <avr/boot.h>
 #include <util/delay.h>
+#include "light_ws2812.h"
 
 #include "bootloaderconfig.h"
 #include "usbdrv/usbdrv.c"
+	
+static struct cRGB Led_Colors[1];
+#define NUMBER_TONES 100
+static uint8_t redTones[NUMBER_TONES];
+
+static uint8_t isFlashing = 0;
+static uint8_t currentQuadrant = 0;
+static uint8_t currentIndex = 0;
+static void nextRedTone(void) 
+{
+	uint8_t redTone;
+	if (currentQuadrant == 0)
+	{
+		redTone = 128+redTones[currentIndex];
+	}
+	else if (currentQuadrant == 1)
+	{
+		redTone = 128+redTones[NUMBER_TONES-1-currentIndex];
+	}
+	else if (currentQuadrant == 2)
+	{
+		redTone = 128-redTones[currentIndex];
+	}
+	else if (currentQuadrant == 3)
+	{
+		redTone = 128-redTones[NUMBER_TONES-1-currentIndex];
+	}
+	Led_Colors[0].r = redTone;
+	if (isFlashing)
+	{
+		if (currentIndex % 4 == 0)
+		{
+			Led_Colors[0].g = Led_Colors[0].g + 1;
+		}
+	}
+	ws2812_sendarray((uint8_t *)&Led_Colors[0],3);
+	currentIndex++;
+	if (currentIndex == NUMBER_TONES)
+	{
+		if (isFlashing)
+		{
+			// stay at 100 when flashing
+			currentIndex--;
+		}
+		currentIndex = 0;
+		currentQuadrant++;
+		if (currentQuadrant > 3)
+		{
+			currentQuadrant = 0;
+		}
+	}
+}
 
 // verify the bootloader address aligns with page size
 #if (defined __AVR_ATtiny841__)||(defined __AVR_ATtiny441__)  
@@ -109,6 +162,11 @@ USB_PUBLIC usbMsgLen_t usbFunctionDescriptor(struct usbRequest *rq) { return 0; 
 // to minimise the chance of leaving the device in a state where the bootloader wont run, if there's power failure
 // during upload
 static inline void eraseApplication(void) {
+   currentAddress.w = 0;   
+ 	currentIndex = 20;
+ 	currentQuadrant = 2;
+ 	isFlashing = 1;
+ 	nextRedTone();
   uint16_t ptr = BOOTLOADER_ADDRESS;
 
   while (ptr) {
@@ -121,13 +179,15 @@ static inline void eraseApplication(void) {
   }
   
   // Reset address to ensure the reset vector is written first.
-  currentAddress.w = 0;   
 }
 
 // simply write currently stored page in to already erased flash memory
 static inline void writeFlashPage(void) {
   if (currentAddress.w - 2 <BOOTLOADER_ADDRESS)
-      boot_page_write(currentAddress.w - 2);   // will halt CPU, no waiting required
+  {
+    boot_page_write(currentAddress.w - 2);   // will halt CPU, no waiting required
+  	 nextRedTone();
+  }
 }
 
 // Write a word into the page buffer.
@@ -235,6 +295,108 @@ static inline void leaveBootloader(void) {
 
 void USB_INTR_VECTOR(void);
 int main(void) {
+	currentQuadrant = 3;
+	redTones[0]= 0;
+	redTones[1]= 2;
+	redTones[2]= 4;
+	redTones[3]= 6;
+	redTones[4]= 8;
+	redTones[5]= 10;
+	redTones[6]= 11;
+	redTones[7]= 13;
+	redTones[8]= 15;
+	redTones[9]= 17;
+	redTones[10]= 19;
+	redTones[11]= 21;
+	redTones[12]= 23;
+	redTones[13]= 25;
+	redTones[14]= 27;
+	redTones[15]= 29;
+	redTones[16]= 31;
+	redTones[17]= 33;
+	redTones[18]= 35;
+	redTones[19]= 37;
+	redTones[20]= 39;
+	redTones[21]= 41;
+	redTones[22]= 43;
+	redTones[23]= 45;
+	redTones[24]= 46;
+	redTones[25]= 48;
+	redTones[26]= 50;
+	redTones[27]= 52;
+	redTones[28]= 54;
+	redTones[29]= 56;
+	redTones[30]= 57;
+	redTones[31]= 59;
+	redTones[32]= 61;
+	redTones[33]= 63;
+	redTones[34]= 64;
+	redTones[35]= 66;
+	redTones[36]= 68;
+	redTones[37]= 70;
+	redTones[38]= 71;
+	redTones[39]= 73;
+	redTones[40]= 74;
+	redTones[41]= 76;
+	redTones[42]= 78;
+	redTones[43]= 79;
+	redTones[44]= 81;
+	redTones[45]= 82;
+	redTones[46]= 84;
+	redTones[47]= 85;
+	redTones[48]= 87;
+	redTones[49]= 88;
+	redTones[50]= 90;
+	redTones[51]= 91;
+	redTones[52]= 92;
+	redTones[53]= 94;
+	redTones[54]= 95;
+	redTones[55]= 96;
+	redTones[56]= 98;
+	redTones[57]= 99;
+	redTones[58]= 100;
+	redTones[59]= 101;
+	redTones[60]= 103;
+	redTones[61]= 104;
+	redTones[62]= 105;
+	redTones[63]= 106;
+	redTones[64]= 107;
+	redTones[65]= 108;
+	redTones[66]= 109;
+	redTones[67]= 110;
+	redTones[68]= 111;
+	redTones[69]= 112;
+	redTones[70]= 113;
+	redTones[71]= 114;
+	redTones[72]= 115;
+	redTones[73]= 116;
+	redTones[74]= 117;
+	redTones[75]= 117;
+	redTones[76]= 118;
+	redTones[77]= 119;
+	redTones[78]= 119;
+	redTones[79]= 120;
+	redTones[80]= 121;
+	redTones[81]= 121;
+	redTones[82]= 122;
+	redTones[83]= 122;
+	redTones[84]= 123;
+	redTones[85]= 123;
+	redTones[86]= 124;
+	redTones[87]= 124;
+	redTones[88]= 125;
+	redTones[89]= 125;
+	redTones[90]= 125;
+	redTones[91]= 126;
+	redTones[92]= 126;
+	redTones[93]= 126;
+	redTones[94]= 126;
+	redTones[95]= 127;
+	redTones[96]= 127;
+	redTones[97]= 127;
+	redTones[98]= 127;
+	redTones[99]= 127;
+
   uint8_t osccal_tmp;
   
   bootLoaderInit();
@@ -302,7 +464,10 @@ int main(void) {
  #endif
       // commands are only evaluated after next USB transmission or after 5 ms passed
       if (command==cmd_erase_application) 
+		{
         eraseApplication();
+	  	}
+	  
       if (command==cmd_write_page) 
         writeFlashPage();          
  #if OSCCAL_SLOW_PROGRAMMING
@@ -339,7 +504,10 @@ int main(void) {
          if (pgm_read_byte(BOOTLOADER_ADDRESS - TINYVECTOR_RESET_OFFSET + 1)!=0xff)  break;
       }
       
-      LED_MACRO( idlePolls.b[0] );   
+		if (isFlashing == 0)
+		{
+			nextRedTone();
+		}
 
        // Test whether another interrupt occurred during the processing of USBpoll and commands.
        // If yes, we missed a data packet on the bus. Wait until the bus was idle for 8.8µs to 
@@ -364,7 +532,7 @@ int main(void) {
     } while(1);  
 
     LED_EXIT();
-    
+	 	 
     initHardware();  /* Disconnect micronucleus */    
     
     USB_INTR_ENABLE = 0;
